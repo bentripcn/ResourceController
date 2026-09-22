@@ -11,7 +11,7 @@
 
 ## 下载
 
-[下载最新版本](https://github.com/bentripcn/ResourceController/releases/latest) · [直接下载 Windows x64 便携包](https://github.com/bentripcn/ResourceController/releases/download/v1.0.0/ResourceController-1.0.0-windows-x64.zip)
+[下载最新版本](https://github.com/bentripcn/ResourceController/releases/latest) · [查看 v1.0.0 发布说明](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.0) · [直接下载 Windows x64 便携包](https://github.com/bentripcn/ResourceController/releases/download/v1.0.0/ResourceController-1.0.0-windows-x64.zip)
 
 下载 `ResourceController-1.0.0-windows-x64.zip` 后完整解压，双击 `ResourceController.exe` 即可运行。发布包已经包含 Qt、Pillow 和 FFmpeg，目标电脑无需安装 Python 或其他运行环境。
 
