@@ -2,24 +2,31 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
 import sys
 
 
 if sys.platform == "win32":
     bundle_root = getattr(sys, "_MEIPASS", "")
-    # PyInstaller 6.0+ one-folder builds place collected packages under
-    # ``_internal`` while older builds used the bundle root. Support both so
-    # the hook remains compatible with existing release artifacts.
-    candidates = (
-        os.path.join(bundle_root, "_internal", "PySide6"),
-        os.path.join(bundle_root, "PySide6"),
+    # In a PyInstaller 6 one-folder build, sys._MEIPASS already points to the
+    # ``_internal`` directory. Shiboken.pyd lives in a package subdirectory,
+    # while shiboken6.abi3.dll and pyside6.abi3.dll live at its root. Register
+    # every relevant directory before qt_app imports PySide6.
+    roots = (bundle_root, os.path.join(bundle_root, "_internal"))
+    package_root = next(
+        (root for root in roots if os.path.isdir(os.path.join(root, "PySide6"))),
+        bundle_root,
     )
-    pyside_dir = next((path for path in candidates if os.path.isdir(path)), "")
-    if pyside_dir:
-        # Keep the handle alive for the lifetime of the process; dropping it
-        # immediately unregisters the directory on Windows.
-        _qt_dll_directory = os.add_dll_directory(pyside_dir)
-        os.environ["PATH"] = pyside_dir + os.pathsep + os.environ.get("PATH", "")
-        ctypes.windll.kernel32.SetDllDirectoryW(pyside_dir)
+    candidates = (
+        package_root,
+        os.path.join(package_root, "PySide6"),
+        os.path.join(package_root, "shiboken6"),
+    )
+    dll_directories = []
+    for path in candidates:
+        if path and os.path.isdir(path):
+            # Keep all handles alive for the lifetime of the process; dropping
+            # a handle unregisters that DLL search directory immediately.
+            dll_directories.append(os.add_dll_directory(path))
+    if dll_directories:
+        os.environ["PATH"] = os.pathsep.join(candidates) + os.pathsep + os.environ.get("PATH", "")
