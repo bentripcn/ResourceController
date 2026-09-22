@@ -27,4 +27,18 @@ python -m PyInstaller @pyinstallerArgs
 $buildExit = $LASTEXITCODE
 $env:PYTHONPATH = $oldPythonPath
 if ($buildExit -ne 0) { throw "PyInstaller failed with exit code $buildExit" }
+
+# Qt 6.11 expects the Windows ICU ABI (icuuc.dll).  The PyInstaller Qt hook
+# can otherwise pick up an unrelated ICU from tools such as Poppler on PATH;
+# that DLL exports version-suffixed symbols and makes Qt6Core fail with
+# WinError 127 (which PySide reports only as "QtWidgets DLL not found").
+# Ship the Windows ICU binary beside Qt so the package does not depend on the
+# target machine's system ICU installation.
+$qtInternal = Join-Path $project 'dist/ResourceController/_internal'
+$systemIcu = Join-Path $env:WINDIR 'System32/icuuc.dll'
+if (Test-Path -LiteralPath $systemIcu) {
+    Copy-Item -LiteralPath $systemIcu -Destination (Join-Path $qtInternal 'icuuc.dll') -Force
+}
+# Remove an unrelated versioned ICU data file collected from another toolchain.
+Remove-Item -LiteralPath (Join-Path $qtInternal 'icudt78.dll') -Force -ErrorAction SilentlyContinue
 Write-Host 'Build complete: dist/ResourceController/ResourceController.exe'
