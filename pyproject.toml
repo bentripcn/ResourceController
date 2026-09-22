@@ -1,0 +1,34 @@
+[project]
+name = "resource-controller"
+version = "1.0.0"
+description = "Local Qt media library with reversible file operations"
+requires-python = ">=3.10"
+dependencies = ["PySide6>=6.7,<7", "Pillow>=10,<14", "imageio-ffmpeg>=0.5,<1"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["app", "qt_app", "library", "media_tools"]
+
+[tool.setuptools.packages.find]
+include = ["rc_app*"]
+
+[project.scripts]
+resource-controller = "rc_app.bootstrap:main"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [".runtime", ".dev-tools", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"rc_app/__init__.py" = ["E402"]
+"test_qt_ui.py" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"

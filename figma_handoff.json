@@ -1,0 +1,25 @@
+{
+  "name": "ResourceController / Light iOS Desktop",
+  "version": 1,
+  "pages": [
+    {
+      "name": "Library workspace",
+      "frame": {"width": 1450, "height": 920, "radius": 13, "fill": "#f5f5f7"},
+      "components": [
+        {"name": "TitleBar", "height": 42, "fill": "#ffffff"},
+        {"name": "Sidebar", "width": 220, "fill": "#f3f4f7"},
+        {"name": "MetricCard", "variants": ["default", "hover", "selected"], "radius": 12,
+          "selectedFill": "#eaf1ff", "selectedBorder": "#3478f6", "selectedBorderWidth": 2},
+        {"name": "FilterBar", "radius": 11},
+        {"name": "ResourceCard", "variants": ["default", "hover", "selected"], "radius": 11},
+        {"name": "Inspector", "width": 255, "fill": "#fafbfc"}
+      ]
+    }
+  ],
+  "tokens": {
+    "canvas": "#f5f5f7", "surface": "#ffffff", "subtle": "#fafbfc",
+    "ink": "#202633", "muted": "#89909f", "line": "#e5e8ed",
+    "accent": "#3478f6", "accentSoft": "#eaf1ff", "controlRadius": 9,
+    "resourceRadius": 11
+  }
+}
