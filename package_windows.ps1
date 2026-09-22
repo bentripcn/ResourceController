@@ -13,5 +13,8 @@ New-Item -ItemType Directory -Force -Path $release | Out-Null
 if (Test-Path -LiteralPath $archive) {
     Remove-Item -LiteralPath $archive -Force
 }
-Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $archive -CompressionLevel Optimal
+ # Include the application directory itself so extracting the archive creates
+ # ResourceController\<application files> instead of scattering files into the
+ # user's current extraction directory.
+Compress-Archive -Path $dist -DestinationPath $archive -CompressionLevel Optimal
 Write-Host "Package complete: $archive"
