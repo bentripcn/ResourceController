@@ -5,7 +5,7 @@ $runtime = Join-Path $project '.runtime'
 $ffmpeg = Get-ChildItem (Join-Path $runtime 'imageio_ffmpeg/binaries') -Filter 'ffmpeg*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $ffmpeg) { throw 'imageio-ffmpeg did not provide its bundled ffmpeg.exe' }
 $pyinstallerArgs = @(
-    '--noconfirm', '--clean', '--windowed', '--name', 'ResourceController',
+    '--noconfirm', '--clean', '--noupx', '--windowed', '--name', 'ResourceController',
     '--paths', $project,
     # media_tools discovers imageio-ffmpeg dynamically at runtime; include the
     # module explicitly so a packaged build can still locate its bundled
