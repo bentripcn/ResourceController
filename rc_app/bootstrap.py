@@ -8,7 +8,7 @@ import sys
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
-from rc_app.ui.theme import STYLE, apply_palette
+from rc_app.ui.theme import STYLE, app_logo, apply_palette
 from rc_app.ui.window import MainWindow
 
 
@@ -19,6 +19,7 @@ def main(argv=None):
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("ResourceController")
     app.setOrganizationName("ResourceController")
+    app.setWindowIcon(app_logo())
     app.setStyle("Fusion")
     apply_palette(app)
     app.setStyleSheet(STYLE)

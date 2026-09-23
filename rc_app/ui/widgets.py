@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from rc_app.ui.theme import BLUE, INK, TYPE_LABELS, button, format_size, icon, label
+from rc_app.ui.theme import BLUE, INK, TYPE_LABELS, app_logo, button, format_size, icon, label
 
 
 class CardDelegate(QStyledItemDelegate):
@@ -492,7 +492,9 @@ class TitleBar(QFrame):
         row.setContentsMargins(16, 2, 10, 2)
         row.setSpacing(7)
         mark = QLabel()
-        mark.setPixmap(icon("grid", BLUE, 20).pixmap(20, 20))
+        mark.setFixedSize(28, 28)
+        mark.setPixmap(app_logo().pixmap(28, 28))
+        mark.setScaledContents(True)
         row.addWidget(mark)
         row.addWidget(label("资源整理器", "detailTitle"))
         row.addStretch()
