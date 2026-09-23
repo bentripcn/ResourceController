@@ -53,7 +53,7 @@ from rc_app.ui.interactions import GradePopup, SmoothScroll
 from rc_app.ui.jobs import Job
 from rc_app.ui.models import ResourceModel
 from rc_app.ui.player import MediaPreview
-from rc_app.ui.theme import BLUE, TYPE_LABELS, button, format_size, icon, label
+from rc_app.ui.theme import BLUE, TYPE_LABELS, app_logo, button, format_size, icon, label
 from rc_app.ui.thumbnails import ThumbnailStore
 from rc_app.ui.widgets import CardDelegate, CategoryTree, ModernComboBox, MultiTagComboBox, ResourceGrid, ReviewDialog, SegmentedGrade, TagChipView, TitleBar
 
@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
         self.lib = library or (Library(data_dir) if data_dir else Library.unbound())
         self.controller = LibraryController(self.lib)
         self.setWindowTitle("资源整理器")
-        self.setWindowIcon(icon("all", BLUE, 32))
+        self.setWindowIcon(app_logo())
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         screen = QApplication.primaryScreen()

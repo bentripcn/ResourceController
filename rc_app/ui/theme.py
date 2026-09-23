@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QPoint, QRectF, QSize, Qt
@@ -18,6 +20,20 @@ INK = "#202633"
 
 
 MUTED = "#89909f"
+
+
+def app_logo() -> QIcon:
+    """Return the shared application logo in source and frozen builds."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    candidates = (
+        bundle_root / "assets" / "resource-organizer-logo.svg",
+        bundle_root / "assets" / "resource-organizer-logo.ico",
+        Path(__file__).resolve().parents[2] / "assets" / "resource-organizer-logo.svg",
+    )
+    for path in candidates:
+        if path.is_file():
+            return QIcon(str(path))
+    return icon("all", BLUE, 32)
 
 
 STYLE = """
