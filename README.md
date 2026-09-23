@@ -1,5 +1,11 @@
 # 资源整理器
 
+<p align="center">
+  <img src="assets/resource-organizer-logo.svg" alt="资源整理器 Logo" width="128">
+</p>
+
+<p align="center">本地图片、视频与文件夹资源整理工具</p>
+
 ![Version](https://img.shields.io/badge/version-1.0.0-3478F6)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
