@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from media_tools import resolve_ffmpeg
+from media_tools import register_heif_support, resolve_ffmpeg
 
 IMAGE_EXTENSIONS = {
     ".jpg",
@@ -1752,6 +1752,7 @@ class Library:
                 from PIL import Image, ImageOps
             except ImportError as exc:
                 raise LibraryError("相似图片检测需要安装 Pillow。") from exc
+            register_heif_support()
             hashes = []
             for resource in resources:
                 try:

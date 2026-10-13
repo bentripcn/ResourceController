@@ -19,7 +19,7 @@
 
 [下载最新版本](https://github.com/bentripcn/ResourceController/releases/latest) · [查看 v1.0.0 发布说明](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.0) · [直接下载 Windows x64 便携包](https://github.com/bentripcn/ResourceController/releases/download/v1.0.0/ResourceController-1.0.0-windows-x64.zip)
 
-下载 `ResourceController-1.0.0-windows-x64.zip` 后完整解压，双击 `ResourceController.exe` 即可运行。发布包已经包含 Qt、Pillow 和 FFmpeg，目标电脑无需安装 Python 或其他运行环境。
+下载 `ResourceController-1.0.0-windows-x64.zip` 后完整解压，双击 `ResourceController.exe` 即可运行。发布包已经包含 Qt、Pillow、pillow-heif 和 FFmpeg，目标电脑无需安装 Python 或其他运行环境。
 
 > 支持 Windows 10/11 x64。请勿只复制单独的 EXE，程序需要同目录中的运行组件。
 
@@ -28,7 +28,7 @@
 - 自由创建多级分类，分类与真实文件夹结构保持一致。
 - 使用 `A_`、`B_`、`C_` 文件名前缀记录分级。
 - 一个资源可添加多个扁平标签，标签以 `[标签]` 写入文件名。
-- 支持图片、视频和原子文件夹资源；默认不会递归修改文件夹内部内容。
+- 支持 JPG、PNG、WebP、TIFF、HEIC/HEIF 等图片，以及视频和原子文件夹资源；默认不会递归修改文件夹内部内容。
 - 支持缩略图网格、列表视图、详情查看、图片预览和视频播放。
 - 支持多选、拖放、批量分级、批量标签、批量移动和批量重命名。
 - 支持按分类、分级、标签、资源类型和关键词组合筛选。
