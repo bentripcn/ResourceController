@@ -6,6 +6,17 @@ $ffmpeg = Get-ChildItem (Join-Path $runtime 'imageio_ffmpeg/binaries') -Filter '
 if (-not $ffmpeg) { throw 'imageio-ffmpeg did not provide its bundled ffmpeg.exe' }
 $icon = Join-Path $project 'assets/resource-organizer-logo.ico'
 if (-not (Test-Path -LiteralPath $icon)) { throw "Application icon not found: $icon" }
+# PyInstaller removes the existing one-folder output before collecting. Some
+# DLLs copied by an earlier build can be read-only, which makes that cleanup
+# fail even after the application has been closed.
+$existingDist = Join-Path $project 'dist/ResourceController'
+if (Test-Path -LiteralPath $existingDist) {
+    Get-ChildItem -LiteralPath $existingDist -Force -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Attributes -band [IO.FileAttributes]::ReadOnly) {
+            $_.Attributes = $_.Attributes -bxor [IO.FileAttributes]::ReadOnly
+        }
+    }
+}
 $pyinstallerArgs = @(
     '--noconfirm', '--clean', '--noupx', '--windowed', '--name', 'ResourceController', '--icon', $icon,
     '--paths', $project,
@@ -13,6 +24,7 @@ $pyinstallerArgs = @(
     # module explicitly so a packaged build can still locate its bundled
     # executable instead of relying on a developer machine's PATH.
     '--hidden-import', 'imageio_ffmpeg',
+    '--collect-all', 'pillow_heif',
     '--runtime-hook', (Join-Path $project 'pyi_rth_qt.py'),
     '--add-data', "$(Join-Path $project 'assets/resource-organizer-logo.svg');assets",
     '--add-data', "$(Join-Path $project 'assets/resource-organizer-logo.ico');assets",

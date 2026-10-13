@@ -1141,11 +1141,19 @@ class MainWindow(QMainWindow):
         tag_picker.setMinimumHeight(120)
         tag_picker.setMaximumHeight(170)
         tag_picker.setObjectName("tagPicker")
+        selected_rows = self.selected_resources()
+        common_tags = set(selected_rows[0].get("tags", [])) if selected_rows else set()
+        for resource in selected_rows[1:]:
+            common_tags.intersection_update(resource.get("tags", []))
         for tag in self.lib.tags():
             item = QListWidgetItem(f"#{tag['name']}   {tag['count']}")
             item.setData(Qt.ItemDataRole.UserRole, tag["name"])
             item.setSizeHint(QSize(min(230, max(105, len(tag["name"]) * 14 + 55)), 34))
             tag_picker.addItem(item)
+            # QListWidget selection only becomes effective after the item has
+            # entered the model. This also makes existing common tags visible
+            # when editing one resource or a multi-selection.
+            item.setSelected(tag["name"] in common_tags)
         add = QLineEdit()
         add.setPlaceholderText("多个标签用中文或英文逗号分隔")
         remove = QLineEdit()
@@ -1379,8 +1387,10 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem("#" + tag["name"])
             item.setData(Qt.ItemDataRole.UserRole, tag["name"])
             item.setSizeHint(QSize(min(150, max(90, len(tag["name"]) * 14 + 30)), 34))
-            item.setSelected(tag["name"] in active)
             panel.addItem(item)
+            # Set selection after insertion; setting it before addItem is
+            # discarded by QListWidget and made existing tags look inactive.
+            item.setSelected(tag["name"] in active)
         action = QWidgetAction(menu)
         action.setDefaultWidget(panel)
         menu.addAction(action)

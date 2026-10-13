@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, QSize, Qt, QThreadPool, Signal, Slot
 from PySide6.QtGui import QImage, QImageReader
 
 from library import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
-from media_tools import make_video_poster, resolve_ffmpeg
+from media_tools import decode_image_bytes, make_video_poster, register_heif_support, resolve_ffmpeg
 from rc_app.ui.jobs import Job
 
 
@@ -105,6 +105,7 @@ class ThumbnailStore(QObject):
                     try:
                         from PIL import Image, ImageOps
 
+                        register_heif_support()
                         with Image.open(source) as original:
                             im = ImageOps.exif_transpose(original)
                             im.thumbnail((700, 520))
@@ -112,6 +113,11 @@ class ThumbnailStore(QObject):
                             image = QImage(
                                 im.tobytes(), im.width, im.height, QImage.Format.Format_RGBA8888
                             ).copy()
+                    except Exception:
+                        pass
+                if image.isNull() and source and Path(source).suffix.lower() in {".heic", ".heif"}:
+                    try:
+                        image = QImage.fromData(decode_image_bytes(source, size=(700, 520)), "PNG")
                     except Exception:
                         pass
                 return key, image

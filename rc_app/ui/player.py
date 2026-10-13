@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from rc_app.ui.theme import button, icon, label
 from rc_app.ui.media_canvas import MediaCanvas
+from media_tools import decode_image_bytes, register_heif_support
 
 
 class SeekSlider(QSlider):
@@ -326,6 +327,7 @@ class MediaPreview(QDialog):
         try:
             from PIL import Image, ImageOps
 
+            register_heif_support()
             with Image.open(path) as original:
                 image = ImageOps.exif_transpose(original)
                 image.thumbnail((2560, 1600))
@@ -334,7 +336,13 @@ class MediaPreview(QDialog):
                     image.tobytes(), image.width, image.height, QImage.Format.Format_RGBA8888
                 ).copy()
         except Exception:
-            return QImage()
+            pass
+        if str(path).lower().endswith((".heic", ".heif")):
+            try:
+                return QImage.fromData(decode_image_bytes(path, size=(2560, 1600)), "PNG")
+            except Exception:
+                pass
+        return QImage()
 
     def fit_image(self):
         if not self.image.isNull():

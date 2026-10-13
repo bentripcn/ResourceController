@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import os
 import re
 import shutil
@@ -21,6 +22,35 @@ from typing import Iterable
 
 class MediaToolError(RuntimeError):
     """An FFmpeg operation could not be completed."""
+
+
+_HEIF_REGISTERED = False
+
+
+def register_heif_support() -> bool:
+    """Register Pillow's HEIF/HEIC opener when the optional codec is present.
+
+    The application keeps HEIC support optional so existing installations can
+    still start while the runtime is being upgraded.  Registration is
+    idempotent and deliberately happens at the shared media boundary instead
+    of in individual widgets.
+    """
+    global _HEIF_REGISTERED
+    if _HEIF_REGISTERED:
+        return True
+    runtime = Path(__file__).resolve().parent / ".runtime"
+    if runtime.is_dir() and str(runtime) not in sys.path:
+        sys.path.insert(0, str(runtime))
+    try:
+        from pillow_heif import register_heif_opener
+    except ImportError:
+        return False
+    try:
+        register_heif_opener()
+    except Exception:
+        return False
+    _HEIF_REGISTERED = True
+    return True
 
 
 def _roots() -> Iterable[Path]:
@@ -184,6 +214,69 @@ def extract_frame(
     return str(destination)
 
 
+def decode_image_bytes(
+    image: str | os.PathLike[str],
+    *,
+    size: tuple[int, int] | None = None,
+    ffmpeg: str | None = None,
+    timeout: float = 20,
+) -> bytes:
+    """Decode one still image and return detached PNG bytes.
+
+    HEIC/HEIF is decoded through ``pillow-heif`` first.  FFmpeg remains a
+    fallback for environments with older or unusual image codecs.
+    """
+    source = Path(image).expanduser().resolve()
+    if not source.is_file():
+        raise MediaToolError(f"图片文件不存在：{source}")
+    if source.suffix.lower() in {".heic", ".heif"} and register_heif_support():
+        try:
+            from PIL import Image, ImageOps
+
+            with Image.open(source) as original:
+                decoded = ImageOps.exif_transpose(original).convert("RGBA")
+                if size:
+                    width, height = int(size[0]), int(size[1])
+                    if width < 1 or height < 1:
+                        raise MediaToolError("图片预览尺寸必须为正数。")
+                    decoded.thumbnail((width, height), Image.Resampling.LANCZOS)
+                output = io.BytesIO()
+                decoded.save(output, format="PNG")
+                return output.getvalue()
+        except MediaToolError:
+            raise
+        except Exception:
+            # Keep FFmpeg as a compatibility fallback for malformed or
+            # partially supported HEIF variants.
+            pass
+    executable = resolve_ffmpeg(ffmpeg)
+    if not executable:
+        raise MediaToolError("未找到 FFmpeg。请先安装项目运行时依赖。")
+    command = [executable, "-hide_banner", "-loglevel", "error", "-i", str(source), "-frames:v", "1"]
+    if size:
+        width, height = int(size[0]), int(size[1])
+        if width < 1 or height < 1:
+            raise MediaToolError("图片预览尺寸必须为正数。")
+        command.extend(["-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease"])
+    command.extend(["-f", "image2", "-vcodec", "png", "pipe:1"])
+    try:
+        process = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise MediaToolError(f"FFmpeg 图片解码失败：{exc}") from exc
+    if process.returncode != 0 or not process.stdout:
+        message = (process.stderr or b"image decode failed").decode("utf-8", errors="replace").strip()
+        detail = message.splitlines()[-1] if message else "未知错误"
+        raise MediaToolError(f"FFmpeg 图片解码失败：{detail}")
+    return bytes(process.stdout)
+
+
 def video_metadata(
     video: str | os.PathLike[str], *, ffmpeg: str | None = None, timeout: float = 15
 ) -> dict:
@@ -245,6 +338,8 @@ __all__ = [
     "resolve_ffmpeg",
     "ffmpeg_version",
     "extract_frame",
+    "decode_image_bytes",
+    "register_heif_support",
     "video_metadata",
     "make_video_poster",
 ]

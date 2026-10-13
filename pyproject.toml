@@ -3,7 +3,7 @@ name = "resource-controller"
 version = "1.0.0"
 description = "Local Qt media library with reversible file operations"
 requires-python = ">=3.10"
-dependencies = ["PySide6>=6.7,<7", "Pillow>=10,<14", "imageio-ffmpeg>=0.5,<1"]
+dependencies = ["PySide6>=6.7,<7", "Pillow>=10,<14", "pillow-heif>=1.1,<2", "imageio-ffmpeg>=0.5,<1"]
 
 [build-system]
 requires = ["setuptools>=68"]
