@@ -2,7 +2,14 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dist = Join-Path $project 'dist/ResourceController'
 $release = Join-Path $project 'release'
-$archive = Join-Path $release 'ResourceController-1.0.0-windows-x64.zip'
+$versionLine = Get-Content -LiteralPath (Join-Path $project 'pyproject.toml') |
+    Where-Object { $_ -match '^\s*version\s*=\s*"([^"]+)"' } |
+    Select-Object -First 1
+if (-not $versionLine -or $versionLine -notmatch '"([^"]+)"') {
+    throw 'Could not determine the application version from pyproject.toml'
+}
+$version = $Matches[1]
+$archive = Join-Path $release "ResourceController-$version-windows-x64.zip"
 
 & (Join-Path $project 'build_windows.ps1')
 if (-not (Test-Path -LiteralPath (Join-Path $dist 'ResourceController.exe'))) {
