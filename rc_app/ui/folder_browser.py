@@ -41,14 +41,14 @@ class FolderBrowserDialog(QDialog):
         self.location = label(str(self.current), "detailTitle")
         self.location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         top.addWidget(self.location, 1)
-        self.zoom_out = button("−", self._zoom_out)
-        self.zoom_out.setFixedSize(34, 32)
-        self.zoom_out.setToolTip("缩小缩略图")
-        self.zoom_in = button("+", self._zoom_in)
-        self.zoom_in.setFixedSize(34, 32)
-        self.zoom_in.setToolTip("放大缩略图")
-        top.addWidget(self.zoom_out)
-        top.addWidget(self.zoom_in)
+        self.fullscreen_button = button("", self.toggle_fullscreen, glyph="fullscreen")
+        self.fullscreen_button.setFixedSize(34, 32)
+        self.fullscreen_button.setToolTip("全屏")
+        self.hide_button = button("", self.showMinimized, glyph="minimize")
+        self.hide_button.setFixedSize(34, 32)
+        self.hide_button.setToolTip("隐藏窗口")
+        top.addWidget(self.fullscreen_button)
+        top.addWidget(self.hide_button)
         layout.addLayout(top)
 
         self.listing = QListWidget()
@@ -66,27 +66,26 @@ class FolderBrowserDialog(QDialog):
         self.thumbnails = ThumbnailStore(self)
         self.thumbnails.changed.connect(self._thumbnail_changed)
         self._style = self.style()
-        self._zoom = 1.0
-        self._apply_zoom()
+        self._normal_geometry = None
+        self.listing.setIconSize(QSize(144, 100))
+        self.listing.setGridSize(QSize(176, 148))
         self.refresh()
 
-    def _apply_zoom(self):
-        size = QSize(round(144 * self._zoom), round(100 * self._zoom))
-        cell = QSize(round(176 * self._zoom), round(148 * self._zoom))
-        self.listing.setIconSize(size)
-        self.listing.setGridSize(cell)
-        self.zoom_out.setEnabled(self._zoom > 0.8)
-        self.zoom_in.setEnabled(self._zoom < 1.35)
-        for index in range(self.listing.count()):
-            self.listing.item(index).setSizeHint(cell)
+    def toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+            self.fullscreen_button.setToolTip("全屏")
+        else:
+            self._normal_geometry = self.geometry()
+            self.showFullScreen()
+            self.fullscreen_button.setToolTip("退出全屏")
 
-    def _zoom_in(self):
-        self._zoom = min(1.35, round(self._zoom + 0.15, 2))
-        self._apply_zoom()
-
-    def _zoom_out(self):
-        self._zoom = max(0.8, round(self._zoom - 0.15, 2))
-        self._apply_zoom()
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.toggle_fullscreen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _inside_root(self, path: Path) -> bool:
         try:

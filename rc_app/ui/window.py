@@ -1893,6 +1893,9 @@ class MainWindow(QMainWindow):
         self.search_timer.stop()
         self.repaint_timer.stop()
         self.thumbnails.pool.waitForDone()
+        # Persist the active source/target pair even when the user closes the
+        # app without opening Settings again.
+        self._remember_paths()
         self.lib.close()
         event.accept()
 
