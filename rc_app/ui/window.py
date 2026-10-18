@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
+    QProgressDialog,
     QScrollArea,
     QSizeGrip,
     QSplitter,
@@ -49,6 +51,7 @@ from media_tools import make_video_poster
 from rc_app.controller import LibraryController
 from rc_app.models import FilterState
 from rc_app.ui.duplicate_results import DuplicateResultsDialog
+from rc_app.ui.folder_browser import FolderBrowserDialog
 from rc_app.ui.interactions import GradePopup, SmoothScroll
 from rc_app.ui.jobs import Job
 from rc_app.ui.models import ResourceModel
@@ -846,14 +849,14 @@ class MainWindow(QMainWindow):
     def error(self, message):
         QMessageBox.warning(self, "操作未完成", message)
 
-    def run_job(self, text, function, done=None):
+    def run_job(self, text, function, done=None, *, context=False):
         if self.busy:
             return
         self.busy = True
         self.workspace.setEnabled(False)
         self.progress.show()
         self.status_label.setText(text)
-        job = Job(function)
+        job = Job(function, with_context=context)
         self._jobs.add(job)
 
         def finish(result=None, error=None):
@@ -870,6 +873,58 @@ class MainWindow(QMainWindow):
                 if done:
                     done(result)
 
+        job.signals.done.connect(lambda result: finish(result=result))
+        job.signals.failed.connect(lambda error: finish(error=error))
+        self.pool.start(job)
+
+    def run_cancelable_job(self, text, function, done=None):
+        """Run a long scan with a visible progress/cancel control."""
+        if self.busy:
+            return
+        cancel_event = threading.Event()
+        dialog = QProgressDialog(text, "中止", 0, 0, self)
+        dialog.setWindowTitle("正在检查重复资源")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(cancel_event.set)
+        dialog.show()
+        self.busy = True
+        self.workspace.setEnabled(False)
+        self.progress.show()
+        self.status_label.setText(text)
+        job = Job(function, cancel_event=cancel_event, with_context=True)
+        self._jobs.add(job)
+
+        def update_progress(value):
+            if not isinstance(value, dict):
+                return
+            total = int(value.get("total") or 0)
+            done_value = min(total, int(value.get("done") or 0)) if total else 0
+            if total:
+                dialog.setRange(0, total)
+                dialog.setValue(done_value)
+            phase = value.get("phase") or text
+            dialog.setLabelText(phase + (" · 正在中止…" if cancel_event.is_set() else ""))
+            self.status_label.setText(phase)
+
+        def finish(result=None, error=None):
+            self._jobs.discard(job)
+            self.busy = False
+            self.workspace.setEnabled(True)
+            self.progress.hide()
+            dialog.close()
+            dialog.deleteLater()
+            if error:
+                self.status_label.setText("操作未完成")
+                self.error(error)
+            else:
+                self.status_label.setText("操作完成 · " + time.strftime("%H:%M"))
+                self.refresh()
+                if done:
+                    done(result)
+
+        job.signals.progress.connect(update_progress)
         job.signals.done.connect(lambda result: finish(result=result))
         job.signals.failed.connect(lambda error: finish(error=error))
         self.pool.start(job)
@@ -1315,7 +1370,7 @@ class MainWindow(QMainWindow):
 
     def open_or_preview(self, index):
         if 0 <= index < len(self.model.rows) and self.model.rows[index]["type"] == "folder":
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self.model.rows[index]["path"]))
+            FolderBrowserDialog(self.model.rows[index]["path"], self).exec()
         else:
             self.preview(index)
 
@@ -1618,9 +1673,11 @@ class MainWindow(QMainWindow):
                 compare_all=True,
                 source_ids=source_ids,
             )
-        self.run_job(
+        self.run_cancelable_job(
             "正在检查重复资源…",
-            lambda kwargs=duplicate_kwargs: self.lib.duplicates(**kwargs),
+            lambda report, cancel_event, kwargs=duplicate_kwargs: self.lib.duplicates(
+                **kwargs, progress=report, cancel_event=cancel_event
+            ),
             self.show_duplicates,
         )
 
@@ -1643,15 +1700,30 @@ class MainWindow(QMainWindow):
         popup.popup(self.grid.viewport().mapToGlobal(rect.topLeft() + QPoint(16, 49)))
 
     def show_duplicates(self, result):
-        dialog = DuplicateResultsDialog(result, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            ids = dialog.selected_ids()
-            if ids and not result.get("temporary"):
-                self.review(
-                    "淘汰所选重复资源",
-                    lambda preview: self.lib.batch_update(ids, trash=True, preview=preview),
-                    confirm=True,
-                )
+        dialog = DuplicateResultsDialog(result, self, self.thumbnails)
+
+        def discard(ids):
+            if self.busy or result.get("temporary"):
+                return
+            try:
+                plan = self.lib.batch_update(ids, trash=True, preview=True)
+            except Exception as exc:
+                self.error(str(exc))
+                return
+            if ReviewDialog("淘汰所选重复资源", plan, self).exec() != QDialog.DialogCode.Accepted:
+                return
+            dialog.set_actions_enabled(False)
+            self.run_job(
+                "正在将重复资源移至待删区…",
+                lambda: self.lib.batch_update(ids, trash=True, preview=False),
+                lambda _result, selected=ids: (
+                    dialog.remove_resources(selected),
+                    dialog.set_actions_enabled(True),
+                ),
+            )
+
+        dialog.discardRequested.connect(discard)
+        dialog.exec()
 
     def settings(self):
         dialog = QDialog(self)

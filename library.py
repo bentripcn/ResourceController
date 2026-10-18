@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from media_tools import register_heif_support, resolve_ffmpeg
+from media_tools import register_heif_support, resolve_ffmpeg, video_metadata
 
 IMAGE_EXTENSIONS = {
     ".jpg",
@@ -1563,7 +1563,7 @@ class Library:
 
     @staticmethod
     def _video_hashes(
-        path: str, ffmpeg: str | None = None
+        path: str, ffmpeg: str | None = None, cancel_event=None
     ) -> list[tuple[int, tuple[int, int, int]]]:
         """Create perceptual hashes for three representative video frames.
 
@@ -1580,18 +1580,44 @@ class Library:
         # Use evenly spaced timestamps. This is robust for different durations
         # and avoids relying on container-specific keyframe metadata.
         duration = 0.0
-        try:
-            probe = subprocess.run(
-                [executable, "-hide_banner", "-i", path],
+        def run_cancellable(command, timeout, *, text_output=True):
+            process = subprocess.Popen(
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-                check=False,
+                text=text_output,
+                encoding="utf-8" if text_output else None,
+                errors="replace" if text_output else None,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            deadline = time.monotonic() + timeout
+            while True:
+                if cancel_event is not None and cancel_event.wait(0.1):
+                    process.terminate()
+                    try:
+                        process.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+                    return None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.kill()
+                    process.communicate()
+                    raise subprocess.TimeoutExpired(command, timeout)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    continue
+
+        try:
+            probe = run_cancellable(
+                [executable, "-hide_banner", "-i", path],
+                15,
+            )
+            if probe is None:
+                return []
             report = probe.stderr or probe.stdout
             match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", report)
             if match:
@@ -1609,8 +1635,10 @@ class Library:
         points = list(dict.fromkeys(round(max(0.0, point), 3) for point in points))
         hashes = []
         for point in points:
+            if cancel_event is not None and cancel_event.is_set():
+                break
             try:
-                process = subprocess.run(
+                process = run_cancellable(
                     [
                         executable,
                         "-hide_banner",
@@ -1630,14 +1658,10 @@ class Library:
                         "png",
                         "pipe:1",
                     ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=False,
-                    timeout=20,
-                    check=False,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    20,
+                    text_output=False,
                 )
-                if process.returncode != 0 or not process.stdout:
+                if process is None or process.returncode != 0 or not process.stdout:
                     continue
                 with Image.open(io.BytesIO(process.stdout)) as image:
                     pixels = _pixel_values(image.convert("L").resize((9, 8)))
@@ -1662,6 +1686,8 @@ class Library:
         source_ids: list[str] | None = None,
         threshold: int = 8,
         expand_folder: str | Path | None = None,
+        progress=None,
+        cancel_event=None,
     ) -> dict:
         """Find duplicate candidates without moving/deleting media.
 
@@ -1711,15 +1737,49 @@ class Library:
             except OSError as exc:
                 raise LibraryError(f"无法展开文件夹资源：{exc}") from exc
         errors, groups = [], []
+        cancelled = False
+        total = len(resources)
+        processed = 0
+
+        def is_cancelled():
+            return bool(cancel_event is not None and cancel_event.is_set())
+
+        def report(done, phase):
+            if progress:
+                progress({"done": done, "total": total, "phase": phase})
+
+        def enrich(resources_to_enrich, offset=0):
+            """Add lightweight media details without making cancellation wait."""
+            for index, resource in enumerate(resources_to_enrich, 1):
+                if is_cancelled():
+                    break
+                if resource.get("type") != "video":
+                    continue
+                try:
+                    resource["media_info"] = video_metadata(
+                        resource["path"], cancel_event=cancel_event
+                    )
+                except Exception:
+                    resource["media_info"] = {}
+                if resource.get("media_info", {}).get("cancelled"):
+                    break
+                report(offset + index, "正在读取重复视频属性")
+
+        report(0, "准备扫描资源")
         if mode == "exact":
             sizes: dict[int, list[dict]] = {}
             for resource in resources:
                 sizes.setdefault(resource["size"], []).append(resource)
             hashes: dict[str, list[dict]] = {}
+            skipped = total - sum(len(items) for items in sizes.values() if len(items) > 1)
+            report(skipped, "跳过文件大小不同的资源")
             for candidates in sizes.values():
                 if len(candidates) < 2:
                     continue
                 for resource in candidates:
+                    if is_cancelled():
+                        cancelled = True
+                        break
                     try:
                         st = Path(resource["path"]).stat()
                         signature = f"{st.st_size}:{st.st_mtime_ns}"
@@ -1729,8 +1789,13 @@ class Library:
                         if not digest:
                             h = hashlib.sha256()
                             with open(resource["path"], "rb") as handle:
-                                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                                while block := handle.read(1024 * 1024):
+                                    if is_cancelled():
+                                        cancelled = True
+                                        break
                                     h.update(block)
+                            if cancelled:
+                                break
                             digest = h.hexdigest()
                             if not resource.get("temporary"):
                                 with self._lock:
@@ -1742,6 +1807,10 @@ class Library:
                         hashes.setdefault(digest, []).append(resource)
                     except OSError as exc:
                         errors.append(f"{resource['name']}: {exc}")
+                    processed += 1
+                    report(skipped + processed, "正在计算文件哈希")
+                if cancelled:
+                    break
             groups = [
                 {"hash": digest, "resources": candidates, "similarity": 100}
                 for digest, candidates in hashes.items()
@@ -1755,6 +1824,9 @@ class Library:
             register_heif_support()
             hashes = []
             for resource in resources:
+                if is_cancelled():
+                    cancelled = True
+                    break
                 try:
                     if resource["type"] == "image":
                         with Image.open(resource["path"]) as im:
@@ -1767,13 +1839,20 @@ class Library:
                         )
                         hashes.append((resource, [(digest, None)]))
                     elif resource["type"] == "video":
-                        frame_hashes = self._video_hashes(resource["path"])
+                        frame_hashes = self._video_hashes(
+                            resource["path"], cancel_event=cancel_event
+                        )
                         if frame_hashes:
                             hashes.append((resource, frame_hashes))
                         else:
                             errors.append(f"{resource['name']}: 无法解码代表帧，已跳过。")
                 except Exception as exc:
                     errors.append(f"{resource['name']}: {exc}")
+                if is_cancelled():
+                    cancelled = True
+                    break
+                processed += 1
+                report(processed, "正在分析媒体相似度")
             def distance(a, b):
                 color_distance = max(abs(x - y) for x, y in zip(a[1], b[1])) / 8 if a[1] and b[1] else 0
                 return (a[0] ^ b[0]).bit_count() + color_distance
@@ -1800,12 +1879,25 @@ class Library:
                     grouped.append({"resources": [resource], "hashes": [digest]})
             groups = [{"resources": group["resources"], "similarity": None}
                       for group in grouped if len(group["resources"]) > 1]
+        enrich(
+            [resource for group in groups for resource in group["resources"]],
+            offset=processed,
+        )
         if compare_all and source_set:
             groups = [
                 group for group in groups
                 if any(resource.get("id") in source_set for resource in group["resources"])
             ]
-        return {"mode": mode, "groups": groups, "errors": errors, "scanned": len(resources), "temporary_scope": temporary_scope, "temporary": bool(temporary_scope)}
+        return {
+            "mode": mode,
+            "groups": groups,
+            "errors": errors,
+            "scanned": len(resources),
+            "processed": processed,
+            "cancelled": cancelled or is_cancelled(),
+            "temporary_scope": temporary_scope,
+            "temporary": bool(temporary_scope),
+        }
 
     def export_data(
         self,

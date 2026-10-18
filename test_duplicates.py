@@ -32,7 +32,7 @@ class DuplicateTests(unittest.TestCase):
         # A single frame is rejected by _video_hashes, so return two samples
         # to exercise the real multi-frame grouping path.
         values = {path: hashes * 2 for path, hashes in values.items()}
-        with patch.object(Library, "_video_hashes", staticmethod(lambda path, ffmpeg=None: values[path])):
+        with patch.object(Library, "_video_hashes", staticmethod(lambda path, **kwargs: values[path])):
             result = self.lib.duplicates(mode="similar", threshold=8)
         self.assertEqual(len(result["groups"]), 1)
         self.assertEqual({r["path"] for r in result["groups"][0]["resources"]}, {str(paths[0]), str(paths[1])})
@@ -84,6 +84,26 @@ class DuplicateTests(unittest.TestCase):
             {resource["id"] for resource in result["groups"][0]["resources"]},
             {inbox_id, copy_id},
         )
+
+    def test_cancelled_exact_scan_returns_groups_found_so_far(self):
+        paths = [self.media / name for name in ("a.jpg", "b.jpg", "later.jpg")]
+        paths[0].write_bytes(b"same")
+        paths[1].write_bytes(b"same")
+        paths[2].write_bytes(b"same")
+        self.lib.scan()
+        import threading
+
+        cancelled = threading.Event()
+
+        def stop_after_pair(progress):
+            if progress["done"] >= 2:
+                cancelled.set()
+
+        result = self.lib.duplicates(mode="exact", progress=stop_after_pair, cancel_event=cancelled)
+        self.assertTrue(result["cancelled"])
+        self.assertGreaterEqual(result["processed"], 2)
+        self.assertEqual(len(result["groups"]), 1)
+        self.assertEqual(len(result["groups"][0]["resources"]), 2)
 
 
 if __name__ == "__main__":

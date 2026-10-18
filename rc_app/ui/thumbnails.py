@@ -27,6 +27,12 @@ class ThumbnailStore(QObject):
         self.pending = set()
         self.jobs = set()
 
+    def shutdown(self):
+        """Stop queued decoders before their QObject owner is destroyed."""
+        self.pool.clear()
+        self.pool.waitForDone(2000)
+        self.jobs.clear()
+
     def image(self, path: str | None, stamp: str = "") -> QImage | None:
         if not path:
             return None

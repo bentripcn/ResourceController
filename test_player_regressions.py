@@ -200,7 +200,7 @@ class PlayerRegressions(unittest.TestCase):
 class DuplicateEntryRegressions(unittest.TestCase):
     def make_owner(self, folders=()):
         owner = SimpleNamespace(lib=Mock(), category="travel", show_duplicates=Mock(),
-                                _select_item=Mock(), run_job=Mock())
+                                _select_item=Mock(), run_job=Mock(), run_cancelable_job=Mock())
         owner.lib.source_root = Path("source")
         owner.lib.resources.return_value = list(folders)
         return owner
@@ -210,24 +210,34 @@ class DuplicateEntryRegressions(unittest.TestCase):
             owner = self.make_owner()
             owner._select_item.return_value = (title, True)
             MainWindow.duplicates(owner)
-            owner.run_job.assert_called_once()
-            _, operation, done = owner.run_job.call_args.args
-            done(operation())
-            owner.lib.duplicates.assert_called_once_with(mode=mode, category="travel", expand_folder=None)
+            owner.run_cancelable_job.assert_called_once()
+            _, operation, done = owner.run_cancelable_job.call_args.args
+            from threading import Event
+            result = operation(lambda *_: None, Event())
+            done(result)
+            owner.lib.duplicates.assert_called_once()
+            kwargs = owner.lib.duplicates.call_args.kwargs
+            self.assertEqual(kwargs["mode"], mode)
+            self.assertEqual(kwargs["category"], "travel")
+            self.assertIsNone(kwargs["expand_folder"])
+            self.assertTrue(callable(kwargs["progress"]))
+            self.assertTrue(kwargs["cancel_event"].is_set() is False)
             owner.show_duplicates.assert_called_once_with(owner.lib.duplicates.return_value)
 
     def test_cancel_does_not_start_job(self):
         owner = self.make_owner()
         owner._select_item.return_value = ("", False)
         MainWindow.duplicates(owner)
-        owner.run_job.assert_not_called()
+        owner.run_cancelable_job.assert_not_called()
 
     def test_folders_stay_atomic_by_default(self):
         owner = self.make_owner([{"type": "folder", "name": "opaque", "path": "opaque"}])
         owner._select_item.side_effect = [("完全重复 · SHA-256", True), ("不展开（文件夹按黑盒处理）", True)]
         MainWindow.duplicates(owner)
-        owner.run_job.call_args.args[1]()
-        owner.lib.duplicates.assert_called_once_with(mode="exact", category="travel", expand_folder=None)
+        _, operation, _ = owner.run_cancelable_job.call_args.args
+        from threading import Event
+        operation(lambda *_: None, Event())
+        self.assertEqual(owner.lib.duplicates.call_args.kwargs["expand_folder"], None)
 
     def test_detection_reads_actual_files_and_returns_results_via_entry(self):
         with tempfile.TemporaryDirectory(prefix="rc-dedup-") as folder:
@@ -248,7 +258,9 @@ class DuplicateEntryRegressions(unittest.TestCase):
                     for title in ("完全重复 · SHA-256", "相似图片 / 视频 · 感知哈希"):
                         owner._select_item.return_value = (title, True)
                         MainWindow.duplicates(owner)
-                        result = owner.run_job.call_args.args[1]()
+                        _, operation, _ = owner.run_cancelable_job.call_args.args
+                        from threading import Event
+                        result = operation(lambda *_: None, Event())
                         self.assertEqual(len(result["groups"]), 1)
                         self.assertEqual(len(result["groups"][0]["resources"]), 2)
                         self.assertEqual(result["errors"], [])

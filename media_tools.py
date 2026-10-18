@@ -278,7 +278,11 @@ def decode_image_bytes(
 
 
 def video_metadata(
-    video: str | os.PathLike[str], *, ffmpeg: str | None = None, timeout: float = 15
+    video: str | os.PathLike[str],
+    *,
+    ffmpeg: str | None = None,
+    timeout: float = 15,
+    cancel_event=None,
 ) -> dict:
     """Read lightweight duration/size metadata using FFmpeg's input probe."""
     source = Path(video).expanduser().resolve()
@@ -286,23 +290,63 @@ def video_metadata(
     if not source.is_file() or not executable:
         raise MediaToolError("视频或 FFmpeg 不可用。")
     try:
-        process = subprocess.run(
-            [executable, "-hide_banner", "-i", str(source)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        command = [executable, "-hide_banner", "-i", str(source)]
+        if cancel_event is None:
+            process = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            deadline = time.monotonic() + timeout
+            while True:
+                if cancel_event.wait(0.1):
+                    process.terminate()
+                    try:
+                        process.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+                    return {"path": str(source), "cancelled": True}
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.kill()
+                    process.communicate()
+                    raise subprocess.TimeoutExpired(command, timeout)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                    process = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise MediaToolError(f"读取视频信息失败：{exc}") from exc
     report = process.stderr or process.stdout
     duration = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", report)
     dimensions = re.search(r"(\d{2,5})x(\d{2,5})", report)
-    result = {"path": str(source), "duration": None, "width": None, "height": None}
+    frame_rate = re.search(r"\b([\d.]+)\s+fps\b", report)
+    result = {
+        "path": str(source),
+        "duration": None,
+        "width": None,
+        "height": None,
+        "frame_rate": float(frame_rate.group(1)) if frame_rate else None,
+    }
     if duration:
         result["duration"] = (
             int(duration.group(1)) * 3600 + int(duration.group(2)) * 60 + float(duration.group(3))
