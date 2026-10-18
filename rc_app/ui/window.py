@@ -1458,9 +1458,7 @@ class MainWindow(QMainWindow):
         panel.setWrapping(True)
         panel.setResizeMode(QListView.ResizeMode.Adjust)
         panel.setMovement(QListView.Movement.Static)
-        # Tags are applied immediately on click; do not show QListWidget's
-        # selection rectangle in the context menu.
-        panel.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        panel.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         panel.setSpacing(6)
         panel.setFixedSize(330, min(250, max(58, ((len(tags) + 2) // 3) * 42 + 16)))
         resource_tags = [set(resource.get("tags", [])) for resource in resources]
@@ -1472,8 +1470,8 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, tag["name"])
             item.setSizeHint(QSize(min(150, max(90, len(tag["name"]) * 14 + 30)), 34))
             panel.addItem(item)
-            if tag["name"] in active:
-                item.setText("✓ #" + tag["name"])
+            # Set selection after insertion so existing tags are highlighted.
+            item.setSelected(tag["name"] in active)
         action = QWidgetAction(menu)
         action.setDefaultWidget(panel)
         menu.addAction(action)
@@ -1484,11 +1482,11 @@ class MainWindow(QMainWindow):
             try:
                 if name in active:
                     active.discard(name)
-                    item.setText("#" + name)
+                    item.setSelected(False)
                     self.lib.batch_update(ids, remove_tags=[name])
                 else:
                     active.add(name)
-                    item.setText("✓ #" + name)
+                    item.setSelected(True)
                     self.lib.batch_update(ids, add_tags=[name])
                 self.refresh()
             except Exception as exc:

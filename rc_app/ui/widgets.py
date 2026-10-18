@@ -46,10 +46,7 @@ class CardDelegate(QStyledItemDelegate):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         box = QRectF(option.rect).adjusted(6, 6, -6, -6)
-        # Selection remains available for batch actions, but cards no longer
-        # render the heavy blue frame/check badge that made the grid look
-        # like a checkbox selection screen.
-        selected = False
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
         hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
         p.setPen(
             QPen(
