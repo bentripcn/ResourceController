@@ -1379,7 +1379,10 @@ class MainWindow(QMainWindow):
             # Folder resources open in their own non-modal top-level window.
             # Keeping a strong reference prevents the dialog from being
             # garbage-collected while the user browses its contents.
-            dialog = FolderBrowserDialog(self.model.rows[index]["path"], self)
+            # Do not parent this viewer to the main window. A true top-level
+            # window receives its own taskbar entry/preview and minimizes and
+            # restores independently on Windows.
+            dialog = FolderBrowserDialog(self.model.rows[index]["path"])
             self._folder_browsers.add(dialog)
             dialog.finished.connect(lambda _result, view=dialog: self._folder_browsers.discard(view))
             dialog.setWindowModality(Qt.WindowModality.NonModal)
@@ -1903,6 +1906,9 @@ class MainWindow(QMainWindow):
         self.search_timer.stop()
         self.repaint_timer.stop()
         self.thumbnails.pool.waitForDone()
+        for view in list(self._folder_browsers):
+            view.close()
+        self._folder_browsers.clear()
         # Persist the active source/target pair even when the user closes the
         # app without opening Settings again.
         self._remember_paths()
