@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self.busy = False
         self._jobs = set()
         self._folder_browsers = set()
+        self._player_windows = set()
         self._closed = False
         self._refreshing = False
         self.pool = QThreadPool(self)
@@ -1181,12 +1182,14 @@ class MainWindow(QMainWindow):
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("批量设置分级与标签")
-        dialog.resize(560, 440)
+        dialog.resize(860, 720)
+        dialog.setMinimumSize(760, 620)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(25, 25, 25, 25)
         layout.addWidget(label(f"整理 {len(ids)} 个资源", "detailTitle"))
         form = QFormLayout()
         form.setSpacing(16)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         grade = ModernComboBox()
         grade.addItem("保留当前分级", None)
         [grade.addItem(g + " 级", g) for g in "ABC"]
@@ -1199,8 +1202,9 @@ class MainWindow(QMainWindow):
         tag_picker.setResizeMode(QListView.ResizeMode.Adjust)
         tag_picker.setMovement(QListView.Movement.Static)
         tag_picker.setSpacing(7)
-        tag_picker.setMinimumHeight(120)
-        tag_picker.setMaximumHeight(170)
+        tag_picker.setMinimumWidth(600)
+        tag_picker.setMinimumHeight(260)
+        tag_picker.setMaximumHeight(430)
         tag_picker.setObjectName("tagPicker")
         selected_rows = self.selected_resources()
         common_tags = set(selected_rows[0].get("tags", [])) if selected_rows else set()
@@ -1209,7 +1213,7 @@ class MainWindow(QMainWindow):
         for tag in self.lib.tags():
             item = QListWidgetItem(f"#{tag['name']}   {tag['count']}")
             item.setData(Qt.ItemDataRole.UserRole, tag["name"])
-            item.setSizeHint(QSize(min(230, max(105, len(tag["name"]) * 14 + 55)), 34))
+            item.setSizeHint(QSize(min(190, max(120, len(tag["name"]) * 12 + 48)), 38))
             tag_picker.addItem(item)
             # QListWidget selection only becomes effective after the item has
             # entered the model. This also makes existing common tags visible
@@ -1405,7 +1409,12 @@ class MainWindow(QMainWindow):
                 return
             media = [resource for resource in self.model.rows if resource["type"] != "folder"]
             start = next(i for i, resource in enumerate(media) if resource["id"] == selected["id"])
-            MediaPreview(media, start, self).exec()
+            player = MediaPreview(media, start)
+            self._player_windows.add(player)
+            player.finished.connect(lambda _result, view=player: self._player_windows.discard(view))
+            player.show()
+            player.raise_()
+            player.activateWindow()
 
     def resource_menu(self, view, point):
         index = view.indexAt(point)
@@ -1449,7 +1458,9 @@ class MainWindow(QMainWindow):
         panel.setWrapping(True)
         panel.setResizeMode(QListView.ResizeMode.Adjust)
         panel.setMovement(QListView.Movement.Static)
-        panel.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        # Tags are applied immediately on click; do not show QListWidget's
+        # selection rectangle in the context menu.
+        panel.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         panel.setSpacing(6)
         panel.setFixedSize(330, min(250, max(58, ((len(tags) + 2) // 3) * 42 + 16)))
         resource_tags = [set(resource.get("tags", [])) for resource in resources]
@@ -1461,9 +1472,8 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, tag["name"])
             item.setSizeHint(QSize(min(150, max(90, len(tag["name"]) * 14 + 30)), 34))
             panel.addItem(item)
-            # Set selection after insertion; setting it before addItem is
-            # discarded by QListWidget and made existing tags look inactive.
-            item.setSelected(tag["name"] in active)
+            if tag["name"] in active:
+                item.setText("✓ #" + tag["name"])
         action = QWidgetAction(menu)
         action.setDefaultWidget(panel)
         menu.addAction(action)
@@ -1474,11 +1484,11 @@ class MainWindow(QMainWindow):
             try:
                 if name in active:
                     active.discard(name)
-                    item.setSelected(False)
+                    item.setText("#" + name)
                     self.lib.batch_update(ids, remove_tags=[name])
                 else:
                     active.add(name)
-                    item.setSelected(True)
+                    item.setText("✓ #" + name)
                     self.lib.batch_update(ids, add_tags=[name])
                 self.refresh()
             except Exception as exc:
@@ -1909,6 +1919,9 @@ class MainWindow(QMainWindow):
         for view in list(self._folder_browsers):
             view.close()
         self._folder_browsers.clear()
+        for player in list(self._player_windows):
+            player.close()
+        self._player_windows.clear()
         # Persist the active source/target pair even when the user closes the
         # app without opening Settings again.
         self._remember_paths()

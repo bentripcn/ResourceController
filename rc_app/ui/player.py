@@ -79,8 +79,8 @@ class MediaPreview(QDialog):
         self._centered = False
         self.slideshow = False
         self.setWindowTitle("资源欣赏")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.resize(1020, 750)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.resize(1240, 820)
         self.setStyleSheet("QDialog { background: #15191f; } QLabel { color: #f4f6f9; }")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)

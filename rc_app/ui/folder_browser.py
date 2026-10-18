@@ -68,6 +68,7 @@ class FolderBrowserDialog(QDialog):
         self.thumbnails = ThumbnailStore(self)
         self.thumbnails.changed.connect(self._thumbnail_changed)
         self._style = self.style()
+        self._player_windows = set()
         self.listing.setIconSize(QSize(144, 100))
         self.listing.setGridSize(QSize(176, 148))
         self.refresh()
@@ -153,6 +154,9 @@ class FolderBrowserDialog(QDialog):
             self.refresh()
 
     def closeEvent(self, event):
+        for player in list(self._player_windows):
+            player.close()
+        self._player_windows.clear()
         self.thumbnails.shutdown()
         super().closeEvent(event)
 
@@ -169,4 +173,9 @@ class FolderBrowserDialog(QDialog):
             return
         resources = self._media
         position = next((index for index, row in enumerate(resources) if row["path"] == str(path)), 0)
-        MediaPreview(resources, position, self).exec()
+        player = MediaPreview(resources, position)
+        self._player_windows.add(player)
+        player.finished.connect(lambda _result, view=player: self._player_windows.discard(view))
+        player.show()
+        player.raise_()
+        player.activateWindow()
