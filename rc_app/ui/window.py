@@ -995,7 +995,7 @@ class MainWindow(QMainWindow):
                 pass
         self.refresh()
 
-    def _open_library_root(self, root):
+    def _open_library_root(self, root, expected_source=None):
         """Open an existing portable library stored inside *root*."""
         data_path = self._library_data_path(root)
         database = data_path / "library.sqlite3"
@@ -1006,6 +1006,13 @@ class MainWindow(QMainWindow):
         if not library.library_root:
             library.close()
             raise LibraryError("所选目录包含无效的资源库数据。")
+        if expected_source and library.source_root:
+            selected = Path(expected_source).expanduser().resolve()
+            if library.source_root != selected:
+                library.close()
+                raise LibraryError(
+                    "该资源库已经绑定其他原始目录，请选择对应原始目录或新建目标库。"
+                )
         self._activate_library(library)
         return library
 
@@ -1034,10 +1041,8 @@ class MainWindow(QMainWindow):
             )
             managed = Path(target or source).resolve()
             if self.lib.data_dir is None:
-                existing = self._open_library_root(managed)
+                existing = self._open_library_root(managed, expected_source=source)
                 if existing:
-                    if existing.source_root and existing.source_root != Path(source).resolve():
-                        raise LibraryError("该资源库已经绑定其他原始库，请选择对应原始库或新目标库。")
                     if not existing.source_root:
                         existing.configure(source, str(managed))
                     self._activate_library(existing)

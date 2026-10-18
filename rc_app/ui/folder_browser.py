@@ -41,6 +41,14 @@ class FolderBrowserDialog(QDialog):
         self.location = label(str(self.current), "detailTitle")
         self.location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         top.addWidget(self.location, 1)
+        self.zoom_out = button("−", self._zoom_out)
+        self.zoom_out.setFixedSize(34, 32)
+        self.zoom_out.setToolTip("缩小缩略图")
+        self.zoom_in = button("+", self._zoom_in)
+        self.zoom_in.setFixedSize(34, 32)
+        self.zoom_in.setToolTip("放大缩略图")
+        top.addWidget(self.zoom_out)
+        top.addWidget(self.zoom_in)
         layout.addLayout(top)
 
         self.listing = QListWidget()
@@ -50,8 +58,7 @@ class FolderBrowserDialog(QDialog):
         self.listing.setMovement(QListWidget.Movement.Static)
         self.listing.setWrapping(True)
         self.listing.setWordWrap(True)
-        self.listing.setIconSize(QSize(144, 100))
-        self.listing.setGridSize(QSize(176, 148))
+        self.listing.setUniformItemSizes(True)
         self.listing.setSpacing(8)
         self.listing.itemDoubleClicked.connect(self.open_item)
         layout.addWidget(self.listing, 1)
@@ -59,7 +66,27 @@ class FolderBrowserDialog(QDialog):
         self.thumbnails = ThumbnailStore(self)
         self.thumbnails.changed.connect(self._thumbnail_changed)
         self._style = self.style()
+        self._zoom = 1.0
+        self._apply_zoom()
         self.refresh()
+
+    def _apply_zoom(self):
+        size = QSize(round(144 * self._zoom), round(100 * self._zoom))
+        cell = QSize(round(176 * self._zoom), round(148 * self._zoom))
+        self.listing.setIconSize(size)
+        self.listing.setGridSize(cell)
+        self.zoom_out.setEnabled(self._zoom > 0.8)
+        self.zoom_in.setEnabled(self._zoom < 1.35)
+        for index in range(self.listing.count()):
+            self.listing.item(index).setSizeHint(cell)
+
+    def _zoom_in(self):
+        self._zoom = min(1.35, round(self._zoom + 0.15, 2))
+        self._apply_zoom()
+
+    def _zoom_out(self):
+        self._zoom = max(0.8, round(self._zoom - 0.15, 2))
+        self._apply_zoom()
 
     def _inside_root(self, path: Path) -> bool:
         try:
@@ -111,6 +138,7 @@ class FolderBrowserDialog(QDialog):
                     continue
                 item.setData(Qt.ItemDataRole.UserRole, resource)
                 item.setToolTip(str(path))
+                item.setSizeHint(self.listing.gridSize())
                 self.listing.addItem(item)
             except OSError:
                 continue
@@ -129,7 +157,7 @@ class FolderBrowserDialog(QDialog):
             if image is not None and not image.isNull():
                 item.setIcon(QIcon(QPixmap.fromImage(image)))
                 item.setData(Qt.ItemDataRole.UserRole + 1, image)
-                item.setSizeHint(QSize(164, 138))
+                item.setSizeHint(self.listing.gridSize())
         self.listing.viewport().update()
 
     def go_up(self):

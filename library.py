@@ -145,7 +145,7 @@ def default_data_dir() -> Path:
 
 
 def global_data_path() -> Path:
-    """Application-wide metadata database (tags, preferences and history)."""
+    """Application-wide preferences and operation history database."""
     configured = os.environ.get("RESOURCE_CONTROLLER_GLOBAL_DB")
     if configured:
         return Path(configured).expanduser()
@@ -190,7 +190,6 @@ class Library:
         self._create_schema()
         self._recover()
         self._open_global_db()
-        self._sync_global_tags()
 
     @classmethod
     def unbound(cls):
@@ -222,7 +221,6 @@ class Library:
         self.global_db.row_factory = sqlite3.Row
         self.global_db.executescript("""
             CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY, value TEXT);
-            CREATE TABLE IF NOT EXISTS global_tags(name TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS global_operations(
                 id TEXT PRIMARY KEY, title TEXT NOT NULL, created REAL NOT NULL,
                 count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'done',
@@ -232,15 +230,11 @@ class Library:
         columns = {row[1] for row in self.global_db.execute("PRAGMA table_info(global_operations)")}
         if "library_root" not in columns:
             self.global_db.execute("ALTER TABLE global_operations ADD COLUMN library_root TEXT")
+        # Tags belong to the selected target-library database. Remove the
+        # legacy application-wide table so switching libraries cannot leak
+        # tag names between repositories.
+        self.global_db.execute("DROP TABLE IF EXISTS global_tags")
         self.global_db.commit()
-
-    def _sync_global_tags(self):
-        if not getattr(self, "global_db", None):
-            return
-        names = [row[0] for row in self.db.execute("SELECT name FROM tags")]
-        if names:
-            self.global_db.executemany("INSERT OR IGNORE INTO global_tags VALUES (?)", [(name,) for name in names])
-            self.global_db.commit()
 
     def close(self):
         with self._lock:
@@ -308,15 +302,14 @@ class Library:
                 raise LibraryError("原始目录和分类库目录必须是已存在的文件夹。")
             old_source, old_managed = self.source_root, self.library_root
             if old_source and source != old_source:
-                # A resource index is bound to the original-library paths.  A
-                # different source therefore needs its own data directory;
-                # otherwise old records could accidentally be interpreted as
-                # resources in the newly selected library.
-                count = self.db.execute("SELECT count(*) FROM resources").fetchone()[0]
-                if count:
-                    raise LibraryError("当前已有资源，请使用独立的数据目录建立另一资源库。")
-                if self.db.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
-                    raise LibraryError("当前已有分类，请使用独立的数据目录建立另一资源库。")
+                # Resources already classified into the target library remain
+                # valid. Only stale, unclassified records belonging to the
+                # previous inbox are detached; files are never deleted. This
+                # makes changing the source folder a safe re-index operation.
+                self.db.execute(
+                    "DELETE FROM resources WHERE category IS NULL AND trashed=0"
+                )
+                self.db.commit()
             if old_source and source == old_source and managed != old_managed:
                 # Relocate each top-level category as an atomic directory.
                 # This preserves resources, nested categories and opaque
@@ -543,13 +536,9 @@ class Library:
                 row[0]
                 for row in self.db.execute("SELECT name FROM tags")
             }
-            global_names = {
-                row[0]
-                for row in self.global_db.execute("SELECT name FROM global_tags")
-            } if getattr(self, "global_db", None) else set()
             return [
                 {"name": row[0], "count": counts.get(row[0], 0)}
-                for row in ((name,) for name in sorted(local | global_names, key=str.casefold))
+                for row in ((name,) for name in sorted(local, key=str.casefold))
             ]
 
     def _snapshot(self) -> dict:
@@ -894,10 +883,6 @@ class Library:
                 ):
                     self.db.execute("DELETE FROM resources WHERE id=?", (row["id"],))
             self.db.commit()
-            if getattr(self, "global_db", None):
-                names = {tag for row in self.db.execute("SELECT tags FROM resources") for tag in (_json_load(row[0], []) or [])}
-                self.global_db.executemany("INSERT OR IGNORE INTO global_tags VALUES (?)", [(name,) for name in names])
-                self.global_db.commit()
             return {"count": len(found_ids), "errors": errors}
 
     @staticmethod
@@ -1198,11 +1183,6 @@ class Library:
                 [],
                 lambda: self.db.execute("INSERT OR IGNORE INTO tags VALUES (?)", (name,)),
             )
-            try:
-                self.global_db.execute("INSERT OR IGNORE INTO global_tags VALUES (?)", (name,))
-                self.global_db.commit()
-            except sqlite3.Error:
-                pass
             return result
 
     def change_tag(self, old: str, new: str | None = None, preview: bool = False) -> dict:
@@ -1210,8 +1190,7 @@ class Library:
         with self._lock:
             old = clean_component(old, tag=True)
             local_exists = self.db.execute("SELECT 1 FROM tags WHERE name=?", (old,)).fetchone()
-            global_exists = self.global_db.execute("SELECT 1 FROM global_tags WHERE name=?", (old,)).fetchone()
-            if not local_exists and not global_exists:
+            if not local_exists:
                 raise LibraryError("标签不存在。")
             if new is not None:
                 new = clean_component(new, tag=True)
@@ -1249,13 +1228,6 @@ class Library:
             result = self._transaction(
                 "删除标签" if new is None else "重命名或合并标签", plans, mutate
             )
-            try:
-                self.global_db.execute("DELETE FROM global_tags WHERE name=?", (old,))
-                if new:
-                    self.global_db.execute("INSERT OR IGNORE INTO global_tags VALUES (?)", (new,))
-                self.global_db.commit()
-            except sqlite3.Error:
-                pass
             return result
 
     def rename_category(self, old: str, new: str, preview: bool = False) -> dict:

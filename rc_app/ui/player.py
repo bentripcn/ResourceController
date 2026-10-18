@@ -156,6 +156,7 @@ class MediaPreview(QDialog):
         self._ended = False
         self._current_media_path = None
         self._seek_was_playing = False
+        self._canvas_press_pos = None
         self._scrub_pause = QTimer(self)
         self._scrub_pause.setSingleShot(True)
         self._scrub_pause.timeout.connect(self._pause_after_scrub)
@@ -592,8 +593,6 @@ class MediaPreview(QDialog):
         if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease) and event.key() in (
             Qt.Key.Key_Right, Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_Down,
         ):
-            if event.isAutoRepeat():
-                return True
             pressed = event.type() == QEvent.Type.KeyPress
             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
                 if pressed:
@@ -602,7 +601,8 @@ class MediaPreview(QDialog):
                 return True
             if self._is_video():
                 if event.key() == Qt.Key.Key_Right:
-                    self._begin_right_hold() if pressed else self._release_right_hold(True)
+                    if not event.isAutoRepeat():
+                        self._begin_right_hold() if pressed else self._release_right_hold(True)
                 elif pressed:
                     self._seek_relative(-3000)
             elif pressed:
@@ -621,22 +621,48 @@ class MediaPreview(QDialog):
                 event.accept()
                 return True
         if (
-            self.video is not None and watched in (self.video, self.video.viewport())
+            watched in tuple(widget for widget in (self.picture, self.picture.viewport(), self.video, self.video.viewport() if self.video else None) if widget is not None)
+            and event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            self._canvas_press_pos = watched.mapTo(self, event.position().toPoint())
+            return False
+        if (
+            watched in tuple(widget for widget in (self.picture, self.picture.viewport(), self.video, self.video.viewport() if self.video else None) if widget is not None)
             and event.type() == QEvent.Type.MouseButtonRelease
             and event.button() == Qt.MouseButton.LeftButton
         ):
-            # MediaCanvas keeps the drag state until its release handler. A
-            # plain click toggles playback; a zoomed drag only pans the frame.
-            if not getattr(self.video, "_panned", False):
+            position = watched.mapTo(self, event.position().toPoint())
+            start = self._canvas_press_pos
+            self._canvas_press_pos = None
+            if start is not None and (position - start).manhattanLength() > 6:
+                return False
+            width = max(1, self.width())
+            if position.x() <= width * 0.18:
+                self._manual_step(-1)
+                event.accept()
+                return True
+            if position.x() >= width * 0.82:
+                self._manual_step(1)
+                event.accept()
+                return True
+            if self._is_video():
                 self._video_clicked()
+                event.accept()
+                return True
             return False
         return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right) and not event.isAutoRepeat():
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self._manual_step(-1 if event.key() == Qt.Key.Key_Up else 1)
+            event.accept()
+            return
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
             if self._is_video():
                 if event.key() == Qt.Key.Key_Right:
-                    self._begin_right_hold()
+                    if not event.isAutoRepeat():
+                        self._begin_right_hold()
                 else:
                     self._seek_relative(-3000)
             else:
