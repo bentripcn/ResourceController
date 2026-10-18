@@ -26,6 +26,16 @@ class FolderBrowserDialog(QDialog):
 
     def __init__(self, root: str, parent=None):
         super().__init__(parent)
+        # QDialog defaults to a close-only title bar on Windows. Explicitly
+        # enable the standard three system controls for this top-level viewer.
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
         self.root = Path(root).expanduser().resolve()
         self.current = self.root
         self.setWindowTitle(self.root.name or str(self.root))
