@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QScrollArea,
     QSizeGrip,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QStyle,
@@ -429,13 +430,24 @@ class MainWindow(QMainWindow):
         self.detail_image = QLabel()
         self.detail_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.detail_image.setFixedHeight(178)
+        self.detail_image.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self.detail_image.setStyleSheet("background: #edf0f5; border-radius: 10px; color: #b3bece;")
         layout.addWidget(self.detail_image)
         self.detail_name = label("选择一个资源")
         self.detail_name.setWordWrap(True)
+        self.detail_name.setMinimumWidth(0)
+        self.detail_name.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.detail_name.setObjectName("detailTitle")
         layout.addWidget(self.detail_name)
         self.detail_kind = label("在这里查看详细信息", "muted")
+        self.detail_kind.setMinimumWidth(0)
+        self.detail_kind.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         layout.addWidget(self.detail_kind)
         self.detail_grade = label("—")
         self.detail_category = label("—")
@@ -449,10 +461,18 @@ class MainWindow(QMainWindow):
         ]:
             layout.addWidget(label(caption, "section"))
             value.setWordWrap(True)
+            value.setMinimumWidth(0)
+            value.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
             layout.addWidget(value)
         layout.addWidget(label("文件位置", "section"))
         self.detail_path = label("—", "muted")
         self.detail_path.setWordWrap(True)
+        self.detail_path.setMinimumWidth(0)
+        self.detail_path.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.detail_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.detail_path)
         layout.addStretch()
@@ -1759,6 +1779,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(26, 26, 26, 26)
         layout.setSpacing(14)
         layout.addWidget(label("资源库设置", "detailTitle"))
+        layout.addWidget(label("请先选择目标库再选择原始库。", "muted"))
         path_buttons = {}
         for caption, value, callback in [
             ("原始库", self.lib.source_root, self.choose_root),
