@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
         self.category = None
         self.busy = False
         self._jobs = set()
+        self._folder_browsers = set()
         self._closed = False
         self._refreshing = False
         self.pool = QThreadPool(self)
@@ -1375,7 +1376,16 @@ class MainWindow(QMainWindow):
 
     def open_or_preview(self, index):
         if 0 <= index < len(self.model.rows) and self.model.rows[index]["type"] == "folder":
-            FolderBrowserDialog(self.model.rows[index]["path"], self).exec()
+            # Folder resources open in their own non-modal top-level window.
+            # Keeping a strong reference prevents the dialog from being
+            # garbage-collected while the user browses its contents.
+            dialog = FolderBrowserDialog(self.model.rows[index]["path"], self)
+            self._folder_browsers.add(dialog)
+            dialog.finished.connect(lambda _result, view=dialog: self._folder_browsers.discard(view))
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
         else:
             self.preview(index)
 

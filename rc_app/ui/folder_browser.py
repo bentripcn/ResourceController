@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from library import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from rc_app.ui.player import MediaPreview
-from rc_app.ui.theme import button, icon, label
+from rc_app.ui.theme import button, label
 from rc_app.ui.thumbnails import ThumbnailStore
 
 
@@ -41,18 +41,6 @@ class FolderBrowserDialog(QDialog):
         self.location = label(str(self.current), "detailTitle")
         self.location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         top.addWidget(self.location, 1)
-        self.minimize_button = button("", self.showMinimized, glyph="minimize", kind="windowControl")
-        self.minimize_button.setFixedSize(34, 32)
-        self.minimize_button.setToolTip("最小化")
-        self.maximize_button = button("", self.toggle_maximized, glyph="maximize", kind="windowControl")
-        self.maximize_button.setFixedSize(34, 32)
-        self.maximize_button.setToolTip("最大化")
-        self.close_button = button("", self.reject, glyph="close", kind="closeControl")
-        self.close_button.setFixedSize(34, 32)
-        self.close_button.setToolTip("关闭")
-        top.addWidget(self.minimize_button)
-        top.addWidget(self.maximize_button)
-        top.addWidget(self.close_button)
         layout.addLayout(top)
 
         self.listing = QListWidget()
@@ -73,23 +61,6 @@ class FolderBrowserDialog(QDialog):
         self.listing.setIconSize(QSize(144, 100))
         self.listing.setGridSize(QSize(176, 148))
         self.refresh()
-
-    def toggle_maximized(self):
-        if self.isMaximized():
-            self.showNormal()
-            self.maximize_button.setIcon(icon("maximize", "#758196", 16))
-            self.maximize_button.setToolTip("最大化")
-        else:
-            self.showMaximized()
-            self.maximize_button.setIcon(icon("maximize", "#758196", 16))
-            self.maximize_button.setToolTip("还原")
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape and self.isMaximized():
-            self.toggle_maximized()
-            event.accept()
-            return
-        super().keyPressEvent(event)
 
     def _inside_root(self, path: Path) -> bool:
         try:
