@@ -528,7 +528,7 @@ class ReviewDialog(QDialog):
         layout.setSpacing(14)
         layout.addWidget(label(title, "detailTitle"))
         count = plan.get("count", len(plan.get("changes", [])))
-        summary = label(f"即将影响 {count} 项。确认后执行，完成后可从操作记录撤销。", "muted")
+        summary = label(f"即将影响 {count} 项。执行后可按 Ctrl+Z 撤销本次操作。", "muted")
         summary.setWordWrap(True)
         layout.addWidget(summary)
         listing = QPlainTextEdit()

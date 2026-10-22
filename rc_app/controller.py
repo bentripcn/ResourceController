@@ -20,6 +20,7 @@ class LibraryController:
             view=filters.view,
             grade="" if grade_values is not None else filters.grade,
             tags=filters.tags,
+            tag_match=filters.tag_match,
             query=filters.query,
         )
         if grade_values:

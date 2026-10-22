@@ -125,6 +125,7 @@ class DuplicateRowDelegate(QStyledItemDelegate):
 
 class DuplicateResultsDialog(QDialog):
     discardRequested = Signal(object)
+    mergeRequested = Signal(object)
 
     def __init__(self, result, parent=None, thumbnail_store=None):
         super().__init__(parent)
@@ -184,6 +185,9 @@ class DuplicateResultsDialog(QDialog):
         self.discard_button = button("移至待删区", self.discard_selected)
         self.discard_button.setEnabled(False)
         row.addWidget(self.discard_button)
+        self.merge_button = button("合并两个文件夹", self.merge_folders, glyph="folder")
+        self.merge_button.setVisible(bool(result.get("folder_pair")))
+        row.addWidget(self.merge_button)
         row.addWidget(button("关闭", self.reject))
         layout.addLayout(row)
 
@@ -241,20 +245,31 @@ class DuplicateResultsDialog(QDialog):
                 )
                 item.setData(0, Qt.ItemDataRole.UserRole, resource)
                 item.setToolTip(2, resource["path"])
-                item.setCheckState(0, Qt.CheckState.Unchecked)
-                if self.result.get("temporary"):
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                if self._is_discardable(resource):
+                    item.setCheckState(0, Qt.CheckState.Unchecked)
+                else:
+                    # Do not call setCheckState for read-only temporary rows:
+                    # Qt adds ItemIsUserCheckable automatically when a check
+                    # state is assigned, even if the flag is removed later.
+                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 heading.addChild(item)
                 self.resource_items.append(item)
                 thumbnail = self.thumbnail_store.image(resource.get("path"))
                 if thumbnail is not None:
                     item.setData(0, Qt.ItemDataRole.UserRole + 1, thumbnail)
-                if not self.result.get("temporary"):
+                if self._is_discardable(resource):
                     remove = button("移至待删区", lambda _=False, row=item: self.discard_item(row), glyph="trash")
                     remove.setFixedHeight(30)
                     self.listing.setItemWidget(item, 6, remove)
         self.listing.expandAll()
         self._update_heading()
+
+    def _is_discardable(self, resource):
+        if self.result.get("read_only_temporary"):
+            return False
+        if resource.get("temporary"):
+            return bool(self.result.get("recursive_category"))
+        return True
 
     def _preview_item(self, item, column):
         if item.parent() and column != 0:
@@ -266,8 +281,13 @@ class DuplicateResultsDialog(QDialog):
 
     def _update_status(self):
         messages = []
-        if self.result.get("temporary"):
-            messages.append("临时展开结果 · 仅供预览，不能更改资源")
+        temporary_kind = self.result.get("temporary_kind")
+        if temporary_kind == "folder_pair":
+            messages.append("双文件夹比较 · 结果只读；合并会将第二个文件夹的内容复制到第一个")
+        elif temporary_kind == "recursive_category":
+            messages.append("分类递归结果 · 文件夹内部的选中重复文件会单独移入待删区，可撤销")
+        elif temporary_kind == "single_folder":
+            messages.append("高级展开结果 · 文件夹内部资源只供预览，不能单独整理")
         if self.result.get("cancelled"):
             messages.append(f"扫描已中止 · 已检查 {self.result.get('processed', 0)} / {self.result.get('scanned', 0)} 项，当前显示已发现的重复内容")
         self.status.setText("\n".join(messages))
@@ -283,22 +303,32 @@ class DuplicateResultsDialog(QDialog):
                 item.setData(0, Qt.ItemDataRole.UserRole + 1, image)
         self.listing.viewport().update()
 
-    def selected_ids(self):
+    def selected_resources(self):
         return [
-            item.data(0, Qt.ItemDataRole.UserRole)["id"]
+            item.data(0, Qt.ItemDataRole.UserRole)
             for item in self.resource_items
             if item.checkState(0) == Qt.CheckState.Checked
+            and self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {})
         ]
+
+    def selected_ids(self):
+        return [resource["id"] for resource in self.selected_resources()]
 
     def select_all_but_one(self):
         self.listing.blockSignals(True)
         try:
             for group_index in range(self.listing.topLevelItemCount()):
                 group = self.listing.topLevelItem(group_index)
-                for child_index in range(group.childCount()):
-                    group.child(child_index).setCheckState(
-                        0,
-                        Qt.CheckState.Unchecked if child_index == 0 else Qt.CheckState.Checked,
+                discardable = [
+                    group.child(child_index)
+                    for child_index in range(group.childCount())
+                    if self._is_discardable(
+                        group.child(child_index).data(0, Qt.ItemDataRole.UserRole) or {}
+                    )
+                ]
+                for index, child in enumerate(discardable):
+                    child.setCheckState(
+                        0, Qt.CheckState.Unchecked if index == 0 else Qt.CheckState.Checked
                     )
         finally:
             self.listing.blockSignals(False)
@@ -307,16 +337,23 @@ class DuplicateResultsDialog(QDialog):
     def _update_selection(self, *_):
         count = len(self.selected_ids())
         self.selection_label.setText(f"已选择 {count} 项移至待删区" if count else "未勾选淘汰项")
-        self.discard_button.setEnabled(bool(count) and not self.result.get("temporary"))
+        self.discard_button.setEnabled(bool(count))
         item = self.listing.currentItem()
         self.preview_button.setEnabled(bool(item and item.parent()))
-        self.keep_one_button.setEnabled(bool(self.result.get("groups")) and not self.result.get("temporary"))
+        has_discardable = any(
+            self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {})
+            for item in self.resource_items
+        )
+        self.keep_one_button.setEnabled(bool(self.result.get("groups")) and has_discardable)
 
     def set_actions_enabled(self, enabled):
         self.keep_one_button.setEnabled(
-            enabled and bool(self.result.get("groups")) and not self.result.get("temporary")
+            enabled and bool(self.result.get("groups")) and any(
+                self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {})
+                for item in self.resource_items
+            )
         )
-        self.discard_button.setEnabled(enabled and bool(self.selected_ids()) and not self.result.get("temporary"))
+        self.discard_button.setEnabled(enabled and bool(self.selected_ids()))
         self.preview_button.setEnabled(
             enabled and self.listing.currentItem() is not None and self.listing.currentItem().parent() is not None
         )
@@ -326,14 +363,19 @@ class DuplicateResultsDialog(QDialog):
                 widget.setEnabled(enabled)
 
     def discard_selected(self):
-        ids = self.selected_ids()
-        if ids:
-            self.discardRequested.emit(ids)
+        resources = self.selected_resources()
+        if resources:
+            self.discardRequested.emit(resources)
+
+    def merge_folders(self):
+        pair = self.result.get("folder_pair")
+        if pair and len(pair) == 2:
+            self.mergeRequested.emit(pair)
 
     def discard_item(self, item):
         resource = item.data(0, Qt.ItemDataRole.UserRole)
-        if resource:
-            self.discardRequested.emit([resource["id"]])
+        if resource and self._is_discardable(resource):
+            self.discardRequested.emit([resource])
 
     def remove_resources(self, ids):
         removed = set(ids)

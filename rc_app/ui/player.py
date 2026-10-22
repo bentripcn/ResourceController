@@ -67,8 +67,9 @@ class SeekSlider(QSlider):
 class MediaPreview(QDialog):
     """Image/video viewer; external opening remains available for uncommon codecs."""
 
-    def __init__(self, resources, start, parent=None):
+    def __init__(self, resources, start, parent=None, cover_callback=None):
         super().__init__(parent)
+        self.cover_callback = cover_callback
         requested = resources[start] if resources and 0 <= start < len(resources) else None
         self.resources = [resource for resource in resources if resource.get("type") != "folder"]
         self.position = next(
@@ -280,7 +281,11 @@ class MediaPreview(QDialog):
         self.play_button.setEnabled(r["type"] == "video" and self.player is not None)
         self._update_play_button()
         self.cover_button.setVisible(
-            r["type"] == "video" and hasattr(self.parent(), "set_video_cover_from_preview")
+            r["type"] == "video"
+            and (
+                callable(self.cover_callback)
+                or hasattr(self.parent(), "set_video_cover_from_preview")
+            )
         )
         if r["type"] == "video" and self.player:
             self.stack.setCurrentWidget(self.video)
@@ -338,7 +343,9 @@ class MediaPreview(QDialog):
                 ).copy()
         except Exception:
             pass
-        if str(path).lower().endswith((".heic", ".heif")):
+        if str(path).lower().endswith((
+            ".heic", ".heif", ".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf", ".rw2", ".raw"
+        )):
             try:
                 return QImage.fromData(decode_image_bytes(path, size=(2560, 1600)), "PNG")
             except Exception:
@@ -705,11 +712,15 @@ class MediaPreview(QDialog):
     def set_video_cover(self):
         if not self._is_video():
             return
+        seconds = (self.player.position() / 1000.0) if self.player else 0.0
+        if callable(self.cover_callback):
+            self.cover_callback(self.resources[self.position], seconds)
+            return
         owner = self.parent()
         if hasattr(owner, "set_video_cover_from_preview"):
             owner.set_video_cover_from_preview(
                 self.resources[self.position],
-                (self.player.position() / 1000.0) if self.player else 0.0,
+                seconds,
             )
 
     def toggle_fullscreen(self):

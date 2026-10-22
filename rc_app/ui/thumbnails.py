@@ -121,7 +121,9 @@ class ThumbnailStore(QObject):
                             ).copy()
                     except Exception:
                         pass
-                if image.isNull() and source and Path(source).suffix.lower() in {".heic", ".heif"}:
+                if image.isNull() and source and Path(source).suffix.lower() in {
+                    ".heic", ".heif", ".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf", ".rw2", ".raw"
+                }:
                     try:
                         image = QImage.fromData(decode_image_bytes(source, size=(700, 520)), "PNG")
                     except Exception:

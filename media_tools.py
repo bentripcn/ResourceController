@@ -24,6 +24,9 @@ class MediaToolError(RuntimeError):
     """An FFmpeg operation could not be completed."""
 
 
+RAW_EXTENSIONS = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf", ".rw2", ".raw"}
+
+
 _HEIF_REGISTERED = False
 
 
@@ -229,6 +232,27 @@ def decode_image_bytes(
     source = Path(image).expanduser().resolve()
     if not source.is_file():
         raise MediaToolError(f"图片文件不存在：{source}")
+    if source.suffix.lower() in RAW_EXTENSIONS:
+        try:
+            import rawpy
+            from PIL import Image
+
+            with rawpy.imread(str(source)) as raw:
+                rgb = raw.postprocess(use_camera_wb=True, output_bps=8)
+            image = Image.fromarray(rgb).convert("RGBA")
+            if size:
+                width, height = int(size[0]), int(size[1])
+                if width < 1 or height < 1:
+                    raise MediaToolError("图片预览尺寸必须为正数。")
+                image.thumbnail((width, height), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+        except MediaToolError:
+            raise
+        except Exception:
+            # RAW support is optional; retain the existing FFmpeg fallback.
+            pass
     if source.suffix.lower() in {".heic", ".heif"} and register_heif_support():
         try:
             from PIL import Image, ImageOps
@@ -384,6 +408,7 @@ __all__ = [
     "extract_frame",
     "decode_image_bytes",
     "register_heif_support",
+    "RAW_EXTENSIONS",
     "video_metadata",
     "make_video_poster",
 ]

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QStyle,
     QVBoxLayout,
 )
@@ -24,7 +25,7 @@ from rc_app.ui.thumbnails import ThumbnailStore
 class FolderBrowserDialog(QDialog):
     """Browse a folder resource without indexing or modifying its contents."""
 
-    def __init__(self, root: str, parent=None):
+    def __init__(self, root: str, parent=None, cover_callback=None):
         super().__init__(parent)
         # QDialog defaults to a close-only title bar on Windows. Explicitly
         # enable the standard three system controls for this top-level viewer.
@@ -37,6 +38,7 @@ class FolderBrowserDialog(QDialog):
             | Qt.WindowType.WindowCloseButtonHint
         )
         self.root = Path(root).expanduser().resolve()
+        self.cover_callback = cover_callback
         self.current = self.root
         self.setWindowTitle(self.root.name or str(self.root))
         self.resize(960, 680)
@@ -63,6 +65,8 @@ class FolderBrowserDialog(QDialog):
         self.listing.setUniformItemSizes(True)
         self.listing.setSpacing(8)
         self.listing.itemDoubleClicked.connect(self.open_item)
+        self.listing.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.listing.customContextMenuRequested.connect(self.show_item_menu)
         layout.addWidget(self.listing, 1)
 
         self.thumbnails = ThumbnailStore(self)
@@ -153,6 +157,17 @@ class FolderBrowserDialog(QDialog):
             self.current = parent
             self.refresh()
 
+    def show_item_menu(self, point):
+        item = self.listing.itemAt(point)
+        if item is None or not self.cover_callback:
+            return
+        resource = item.data(Qt.ItemDataRole.UserRole) or {}
+        if resource.get("type") != "image":
+            return
+        menu = QMenu(self)
+        menu.addAction("设为此文件夹资源封面", lambda: self.cover_callback(resource, None))
+        menu.exec(self.listing.viewport().mapToGlobal(point))
+
     def closeEvent(self, event):
         for player in list(self._player_windows):
             player.close()
@@ -173,7 +188,7 @@ class FolderBrowserDialog(QDialog):
             return
         resources = self._media
         position = next((index for index, row in enumerate(resources) if row["path"] == str(path)), 0)
-        player = MediaPreview(resources, position)
+        player = MediaPreview(resources, position, cover_callback=self.cover_callback)
         self._player_windows.add(player)
         player.finished.connect(lambda _result, view=player: self._player_windows.discard(view))
         player.show()

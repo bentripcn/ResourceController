@@ -13,6 +13,7 @@ class FilterState:
     view: str = "all"
     grade: str | list[str] = ""
     tags: list[str] = field(default_factory=list)
+    tag_match: str = "any"
     types: set[str] = field(default_factory=set)
     query: str = ""
     sort: str = "name"

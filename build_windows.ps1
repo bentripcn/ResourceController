@@ -25,6 +25,7 @@ $pyinstallerArgs = @(
     # executable instead of relying on a developer machine's PATH.
     '--hidden-import', 'imageio_ffmpeg',
     '--collect-all', 'pillow_heif',
+    '--collect-all', 'rawpy',
     '--runtime-hook', (Join-Path $project 'pyi_rth_qt.py'),
     '--add-data', "$(Join-Path $project 'assets/resource-organizer-logo.svg');assets",
     '--add-data', "$(Join-Path $project 'assets/resource-organizer-logo.ico');assets",

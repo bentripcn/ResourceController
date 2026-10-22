@@ -23,8 +23,9 @@ Each selected target library owns its repository state at
 unbound `Library`; selecting or switching a target replaces the active
 repository and controller in place. This prevents indexes from different
 libraries being mixed and keeps application code out of the installation
-directory. A program-level SQLite database stores global tags, recent path
-preferences and the cross-library operation history. Category directories use
+directory. A program-level SQLite database stores recent path preferences;
+tags and session undo journals belong to the active resource library, and
+completed undo history is cleared at close. Category directories use
 the `{Category}` marker on disk and are decoded back to logical category names
 when scanning. `ModernComboBox`, `TagChipView`, and `SeekSlider` provide shared
 interaction primitives for large tag sets, predictable selectors, and direct

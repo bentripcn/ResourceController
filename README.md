@@ -6,7 +6,7 @@
 
 <p align="center">本地图片、视频与文件夹资源整理工具</p>
 
-![Version](https://img.shields.io/badge/version-1.0.1-3478F6)
+![Version](https://img.shields.io/badge/version-1.0.2-3478F6)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
 ![UI](https://img.shields.io/badge/UI-PySide6%20%7C%20Qt-41CD52)
@@ -17,9 +17,9 @@
 
 ## 下载
 
-[下载最新版本](https://github.com/bentripcn/ResourceController/releases/latest) · [查看 v1.0.1 发布说明](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.1) · [直接下载 Windows x64 便携包](https://github.com/bentripcn/ResourceController/releases/download/v1.0.1/ResourceController-1.0.1-windows-x64.zip)
+[下载最新版本](https://github.com/bentripcn/ResourceController/releases/latest) · [查看 v1.0.2 发布说明](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.2) · [直接下载 Windows x64 便携包](https://github.com/bentripcn/ResourceController/releases/download/v1.0.2/ResourceController-1.0.2-windows-x64.zip)
 
-下载 `ResourceController-1.0.1-windows-x64.zip` 后完整解压，双击 `ResourceController.exe` 即可运行。发布包已经包含 Qt、Pillow、pillow-heif 和 FFmpeg，目标电脑无需安装 Python 或其他运行环境。
+下载 `ResourceController-1.0.2-windows-x64.zip` 后完整解压，双击 `ResourceController.exe` 即可运行。发布包已经包含 Qt、Pillow、pillow-heif 和 FFmpeg，目标电脑无需安装 Python 或其他运行环境。
 
 > 支持 Windows 10/11 x64。请勿只复制单独的 EXE，程序需要同目录中的运行组件。
 
@@ -86,7 +86,7 @@ C_旅行视频 [旅行].mp4
 - 缩略图和封面默认不会写入原始媒体目录。
 - 文件夹封面只保存引用，不修改文件夹内部图片。
 - 去重结果由用户确认，程序不会自动删除重复资源。
-- 全局标签、最近路径和全局操作记录保存在应用级数据库中。
+- 最近路径保存在应用级数据库中；标签和本次启动期间的撤销数据保存在当前资源库中。
 
 ## 从源码运行
 
@@ -98,14 +98,6 @@ cd ResourceController
 python -m pip install -r requirements.txt
 python qt_app.py
 ```
-
-## 测试
-
-```powershell
-python -m unittest discover -q
-```
-
-测试覆盖资源扫描、分类与标签、文件操作与撤销、导入导出、重复检测、Qt 交互和播放器行为。测试与功能的对应关系见 [需求实现与验收矩阵](REQUIREMENTS_MATRIX.md)。
 
 ## Windows 构建
 
@@ -125,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File .\package_windows.ps1
 
 ```text
 dist/ResourceController/ResourceController.exe
-release/ResourceController-1.0.1-windows-x64.zip
+release/ResourceController-1.0.2-windows-x64.zip
 ```
 
 ## 项目结构
@@ -147,4 +139,4 @@ ResourceController/
 
 ## 版本
 
-当前稳定版本为 `1.0.1`，对应 Git 标签 [`v1.0.1`](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.1)。
+当前稳定版本为 `1.0.2`，对应 Git 标签 [`v1.0.2`](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.2)。

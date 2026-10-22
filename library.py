@@ -145,7 +145,7 @@ def default_data_dir() -> Path:
 
 
 def global_data_path() -> Path:
-    """Application-wide preferences and operation history database."""
+    """Application-wide preferences database."""
     configured = os.environ.get("RESOURCE_CONTROLLER_GLOBAL_DB")
     if configured:
         return Path(configured).expanduser()
@@ -163,6 +163,19 @@ def _inside(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _inside_lexically(path: Path, root: Path) -> bool:
+    try:
+        candidate = os.path.normcase(os.path.abspath(path))
+        boundary = os.path.normcase(os.path.abspath(root))
+        return candidate != boundary and os.path.commonpath((candidate, boundary)) == boundary
+    except ValueError:
+        return False
+
+
+def _is_linklike(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
 
 
 class Library:
@@ -189,6 +202,7 @@ class Library:
         self.db.execute("PRAGMA foreign_keys=ON")
         self._create_schema()
         self._recover()
+        self._clear_session_operations()
         self._open_global_db()
 
     @classmethod
@@ -208,6 +222,9 @@ class Library:
                 size INTEGER NOT NULL DEFAULT 0, mtime REAL NOT NULL DEFAULT 0,
                 trashed INTEGER NOT NULL DEFAULT 0, cover TEXT,
                 fingerprint TEXT NOT NULL DEFAULT '', hash TEXT, hash_signature TEXT);
+            CREATE TABLE IF NOT EXISTS external_hashes(
+                path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+                hash TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS operations(
                 id TEXT PRIMARY KEY, title TEXT NOT NULL, created REAL NOT NULL,
                 status TEXT NOT NULL, payload TEXT NOT NULL, error TEXT);
@@ -221,26 +238,27 @@ class Library:
         self.global_db.row_factory = sqlite3.Row
         self.global_db.executescript("""
             CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY, value TEXT);
-            CREATE TABLE IF NOT EXISTS global_operations(
-                id TEXT PRIMARY KEY, title TEXT NOT NULL, created REAL NOT NULL,
-                count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'done',
-                library_root TEXT
-            );
         """)
-        columns = {row[1] for row in self.global_db.execute("PRAGMA table_info(global_operations)")}
-        if "library_root" not in columns:
-            self.global_db.execute("ALTER TABLE global_operations ADD COLUMN library_root TEXT")
-        # Tags belong to the selected target-library database. Remove the
-        # legacy application-wide table so switching libraries cannot leak
-        # tag names between repositories.
+        # Tags and operation history are library/session scoped. Remove the
+        # legacy application-wide tables so switching libraries cannot leak
+        # metadata between repositories.
         self.global_db.execute("DROP TABLE IF EXISTS global_tags")
+        self.global_db.execute("DROP TABLE IF EXISTS global_operations")
         self.global_db.commit()
 
     def close(self):
         with self._lock:
+            self._clear_session_operations()
             self.db.close()
             if getattr(self, "global_db", None):
                 self.global_db.close()
+
+    def _clear_session_operations(self):
+        """Discard undo history while preserving unresolved crash recovery."""
+        self.db.execute(
+            "DELETE FROM operations WHERE status NOT IN ('pending','recovery_required')"
+        )
+        self.db.commit()
 
     def _setting(self, key: str, default: Any = None):
         row = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -522,6 +540,34 @@ class Library:
                 )
             return result
 
+    def prune_stale_categories(self) -> int:
+        """Remove category rows whose backing folder was deleted externally.
+
+        This is intentionally a lightweight catalog repair used when opening a
+        library.  It does not scan media, remove files, or touch cover/cache
+        data; a normal sync remains responsible for rebuilding resource rows.
+        """
+        with self._lock:
+            if not self.library_root or not self.library_root.is_dir():
+                return 0
+            stored = [row[0] for row in self.db.execute("SELECT path FROM categories")]
+            missing = [
+                category
+                for category in stored
+                if not self._category_path(category).is_dir()
+            ]
+            if not missing:
+                return 0
+            self.db.executemany(
+                "DELETE FROM categories WHERE path=? OR path LIKE ? ESCAPE '\\'",
+                [
+                    (category, self._like(category) + "/%")
+                    for category in missing
+                ],
+            )
+            self.db.commit()
+            return len(missing)
+
     @staticmethod
     def _like(value: str) -> str:
         return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -564,6 +610,8 @@ class Library:
 
     def backup(self) -> str:
         with self._lock:
+            if self.data_dir is None:
+                raise LibraryError("请先选择目标库后再备份数据。")
             path = (
                 self.data_dir
                 / "backups"
@@ -575,6 +623,183 @@ class Library:
             finally:
                 target.close()
             return str(path)
+
+    def clear_rebuildable_cache(self) -> dict:
+        """Remove generated cache while preserving user-selected covers."""
+        with self._lock:
+            if self.data_dir is None:
+                raise LibraryError("请先选择目标库后再清理缓存。")
+            cache_root = (self.data_dir / "cache").resolve()
+            cache_root.mkdir(parents=True, exist_ok=True)
+            preserved: set[Path] = set()
+            for row in self.db.execute(
+                "SELECT cover FROM resources WHERE cover IS NOT NULL AND cover != ''"
+            ):
+                cover = str(row["cover"])
+                if cover.startswith("@cache/"):
+                    candidate = (cache_root / cover[len("@cache/") :]).resolve()
+                else:
+                    candidate = Path(cover).expanduser().resolve()
+                if _inside(candidate, cache_root) and candidate.is_file():
+                    preserved.add(candidate)
+
+            removed_files = 0
+            removed_bytes = 0
+            for path in sorted(cache_root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
+                resolved = path.resolve()
+                if path.is_file() or path.is_symlink():
+                    if resolved in preserved:
+                        continue
+                    try:
+                        removed_bytes += path.stat().st_size
+                        path.unlink()
+                        removed_files += 1
+                    except FileNotFoundError:
+                        pass
+                    continue
+                if path.is_dir():
+                    try:
+                        path.rmdir()
+                    except OSError:
+                        pass
+
+            # Hashes are regenerated on the next duplicate check. Keep scan
+            # fingerprints because synchronization uses them to match moved resources.
+            hash_count = self.db.execute("SELECT COUNT(*) FROM external_hashes").fetchone()[0]
+            self.db.execute("DELETE FROM external_hashes")
+            self.db.execute("UPDATE resources SET hash=NULL, hash_signature=NULL")
+            self.db.commit()
+            return {
+                "removed_files": removed_files,
+                "removed_bytes": removed_bytes,
+                "preserved_covers": len(preserved),
+                "cleared_hashes": int(hash_count),
+            }
+
+    def clear_library_selection(self) -> None:
+        """Forget session roots without invalidating the portable library.
+
+        The database and media stay in place.  Clearing both root entries
+        makes the next launch behave like a fresh selection flow; opening the
+        same target again will rebind this existing database.
+        """
+        with self._lock:
+            self.db.executemany(
+                "DELETE FROM settings WHERE key=?",
+                [("source_root",), ("library_root",)],
+            )
+            self.db.commit()
+            global_db = getattr(self, "global_db", None)
+            if global_db:
+                global_db.executemany(
+                    "DELETE FROM app_settings WHERE key=?",
+                    [("last_source_root",), ("last_library_root",)],
+                )
+                global_db.commit()
+
+    def list_backups(self) -> list[dict]:
+        """List SQLite backups owned by the active target library."""
+        with self._lock:
+            if self.data_dir is None:
+                return []
+            root = (self.data_dir / "backups").resolve()
+            result = []
+            for path in root.glob("*.sqlite3"):
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                result.append(
+                    {
+                        "name": path.name,
+                        "path": str(path.resolve()),
+                        "size": stat.st_size,
+                        "created": stat.st_mtime,
+                    }
+                )
+            return sorted(result, key=lambda item: item["created"], reverse=True)
+
+    def _backup_path(self, value: str | Path) -> Path:
+        if self.data_dir is None:
+            raise LibraryError("请先选择目标库。")
+        root = (self.data_dir / "backups").resolve()
+        path = Path(value).expanduser().resolve()
+        if not path.is_file() or path.parent != root or path.suffix.lower() != ".sqlite3":
+            raise LibraryError("只能操作当前资源库备份目录中的备份文件。")
+        return path
+
+    def import_backup_file(self, value: str | Path) -> dict:
+        """Validate an external backup, retain a library copy, then restore it."""
+        if self.data_dir is None:
+            raise LibraryError("请先选择目标库。")
+        source = Path(value).expanduser().resolve()
+        if not source.is_file() or source.suffix.lower() != ".sqlite3":
+            raise LibraryError("请选择有效的 SQLite 备份文件（.sqlite3）。")
+        try:
+            check_db = sqlite3.connect(str(source))
+            check = check_db.execute("PRAGMA quick_check").fetchone()
+            tables = {
+                row[0]
+                for row in check_db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            check_db.close()
+        except sqlite3.Error as exc:
+            raise LibraryError(f"无法读取备份文件：{exc}") from exc
+        required = {"settings", "categories", "tags", "resources", "operations"}
+        if not check or check[0] != "ok" or not required.issubset(tables):
+            raise LibraryError("所选文件不是有效或完整的资源整理器备份。")
+        imported = self.data_dir / "backups" / (
+            f"imported-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.sqlite3"
+        )
+        shutil.copy2(source, imported)
+        try:
+            return self.restore_backup(imported)
+        except Exception:
+            imported.unlink(missing_ok=True)
+            raise
+
+    def restore_backup(self, value: str | Path) -> dict:
+        """Restore a validated backup into the active library database."""
+        with self._lock:
+            path = self._backup_path(value)
+            source = sqlite3.connect(str(path))
+            try:
+                check = source.execute("PRAGMA quick_check").fetchone()
+                if not check or check[0] != "ok":
+                    raise LibraryError("备份数据库完整性校验失败，未导入。")
+                tables = {
+                    row[0]
+                    for row in source.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                required = {"settings", "categories", "tags", "resources", "operations"}
+                if not required.issubset(tables):
+                    raise LibraryError("所选文件不是有效的资源整理器备份。")
+                safety_backup = self.backup()
+                self.db.commit()
+                source.backup(self.db)
+                self._create_schema()
+                self._recover()
+                self._clear_session_operations()
+            except sqlite3.Error as exc:
+                raise LibraryError(f"导入备份失败：{exc}") from exc
+            finally:
+                source.close()
+            return {"restored": str(path), "safety_backup": safety_backup}
+
+    def delete_backups(self, values: list[str | Path]) -> dict:
+        """Permanently delete selected backups from this library only."""
+        with self._lock:
+            paths = list(dict.fromkeys(self._backup_path(value) for value in values))
+            deleted = []
+            for path in paths:
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    raise LibraryError(f"无法删除备份 {path.name}：{exc}") from exc
+                deleted.append(str(path))
+            return {"count": len(deleted), "deleted": deleted}
 
     def _move(self, source: str, destination: str):
         src, dst = Path(source), Path(destination)
@@ -691,18 +916,6 @@ class Library:
                 ("done", json.dumps(payload, ensure_ascii=False), operation_id),
             )
             self.db.commit()
-            if getattr(self, "global_db", None):
-                try:
-                    self.global_db.execute(
-                        "INSERT OR REPLACE INTO global_operations(id,title,created,count,status,library_root) VALUES (?,?,?,?,?,?)",
-                        (operation_id, title, time.time(), int(payload.get("count", 0)), "done", str(self.library_root or "")),
-                    )
-                    self.global_db.commit()
-                except sqlite3.Error:
-                    # A locked or read-only global history database must not
-                    # make an already committed resource operation appear to
-                    # have failed.
-                    pass
             # Return the same affected-record count that is persisted in the
             # operation payload.  Metadata-only operations (for example
             # creating a tag or changing a cover) have no filesystem steps,
@@ -776,6 +989,27 @@ class Library:
                     [(category,) for category in discovered],
                 )
                 self.db.commit()
+            # Categories are backed by real folders.  If a user removes a
+            # marked category outside the app, drop its stale database entry
+            # during the next sync so the tree reflects the file system.
+            stored_categories = [r[0] for r in self.db.execute("SELECT path FROM categories")]
+            missing_categories = [
+                category
+                for category in stored_categories
+                if not self._category_path(category).is_dir()
+            ]
+            missing_category_directories = {
+                _key(self._category_path(category)) for category in missing_categories
+            }
+            if missing_categories:
+                self.db.executemany(
+                    "DELETE FROM categories WHERE path=? OR path LIKE ? ESCAPE '\\'",
+                    [
+                        (category, self._like(category) + "/%")
+                        for category in missing_categories
+                    ],
+                )
+                self.db.commit()
             categories = [r[0] for r in self.db.execute("SELECT path FROM categories")]
             category_paths = {_key(self._category_path(c)) for c in categories}
             directories: dict[str, tuple[Path, str | None]] = {
@@ -792,11 +1026,21 @@ class Library:
             for row in existing:
                 fingerprints.setdefault(row["fingerprint"], []).append(row)
             found_ids, errors = set(), []
-            scanned_directories = set()
+            # Treat removed category folders as visited empty directories so
+            # their stale direct-child resource rows are pruned below.  A
+            # resource moved elsewhere during the same sync can still be
+            # matched by fingerprint and retained.
+            scanned_directories = set(missing_category_directories)
             for directory, category in directories.values():
                 try:
                     entries = list(os.scandir(directory))
                 except OSError as exc:
+                    # A removed category directory is an empty scan.  Mark it
+                    # as visited so resources indexed directly inside it are
+                    # removed below, while leaving a missing source root as a
+                    # visible sync error instead of deleting the whole inbox.
+                    if category is not None:
+                        scanned_directories.add(_key(directory))
                     errors.append(f"{directory}: {exc}")
                     continue
                 scanned_directories.add(_key(directory))
@@ -904,13 +1148,16 @@ class Library:
         category: str | None = None,
         grade: str = "",
         tags: list[str] | None = None,
+        tag_match: str = "any",
         type: str = "",
         query: str = "",
         recursive: bool = True,
         view: str = "all",
     ) -> list[dict]:
-        """category=None: all; category='': inbox. Selected tags use AND."""
+        """category=None: all; category='': inbox; tag_match is any/all."""
         with self._lock:
+            if tag_match not in {"any", "all"}:
+                raise LibraryError("未知标签匹配方式。")
             result = []
             for row in self.db.execute(
                 "SELECT * FROM resources ORDER BY name COLLATE NOCASE, path"
@@ -931,8 +1178,13 @@ class Library:
                     continue
                 if type and resource["type"] != type:
                     continue
-                if tags and not set(tags).intersection(resource["tags"]):
-                    continue
+                if tags:
+                    selected_tags = set(tags)
+                    resource_tags = set(resource["tags"])
+                    if tag_match == "all" and not selected_tags.issubset(resource_tags):
+                        continue
+                    if tag_match == "any" and not selected_tags.intersection(resource_tags):
+                        continue
                 if (
                     query.casefold()
                     not in (" ".join([resource["name"], cat, *resource["tags"]])).casefold()
@@ -1330,13 +1582,15 @@ class Library:
             if image_path:
                 path = Path(image_path).resolve()
                 root = Path(resource["path"]).resolve()
-                if (
-                    not _inside(path, root)
-                    or not path.is_file()
-                    or path.suffix.lower() not in IMAGE_EXTENSIONS
-                ):
-                    raise LibraryError("请选择此文件夹资源内部的一张图片。")
-                cover = str(path.relative_to(root))
+                if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+                    raise LibraryError("文件夹封面必须是图片文件。")
+                if _inside(path, root):
+                    cover = str(path.relative_to(root))
+                else:
+                    cache_root = (self.data_dir / "cache").resolve()
+                    if not _inside(path, cache_root):
+                        raise LibraryError("请选择该文件夹资源内部图片，或使用播放器生成当前帧封面。")
+                    cover = "@cache/" + str(path.relative_to(cache_root)).replace("\\", "/")
             return self._transaction(
                 "设置文件夹封面",
                 [],
@@ -1370,14 +1624,329 @@ class Library:
         if resource["type"] == "image":
             return resource["path"]
         if resource["type"] == "folder" and resource["cover"]:
-            path = Path(resource["path"]) / resource["cover"]
-            if _inside(path, Path(resource["path"])) and path.is_file():
-                return str(path)
+            cover = str(resource["cover"])
+            if cover.startswith("@cache/"):
+                path = self.data_dir / "cache" / cover[len("@cache/") :]
+                if _inside(path, self.data_dir / "cache") and path.is_file():
+                    return str(path)
+            else:
+                path = Path(resource["path"]) / cover
+                if _inside(path, Path(resource["path"])) and path.is_file():
+                    return str(path)
         if resource["type"] == "video" and resource["cover"]:
             path = Path(resource["cover"])
             if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
                 return str(path)
         return None
+
+    def permanently_delete(self, resource_ids: list[str] | None = None) -> dict:
+        """Permanently remove selected items already in the program trash."""
+        with self._lock:
+            self._assert_healthy()
+            rows = self.db.execute("SELECT * FROM resources WHERE trashed=1 ORDER BY path").fetchall()
+            selected = None if resource_ids is None else set(resource_ids)
+            if selected is not None:
+                if not selected:
+                    return {"count": 0, "errors": []}
+                rows = [row for row in rows if row["id"] in selected]
+            if not rows:
+                return {"count": 0, "errors": []}
+            if len(rows) >= 20:
+                self.backup()
+            trash_directory = self.data_dir / "trash"
+            trash_root = trash_directory.resolve()
+            if _is_linklike(trash_directory) or not _inside(trash_root, self.data_dir):
+                raise LibraryError("程序待删目录无效，已停止永久删除。")
+            operation_id = uuid.uuid4().hex
+            records = [
+                {"id": row["id"], "name": row["name"], "path": row["path"]}
+                for row in rows
+            ]
+            payload = {"resources": records, "deleted_ids": [], "count": 0}
+            self.db.execute(
+                "INSERT INTO operations VALUES (?,?,?,?,?,NULL)",
+                (
+                    operation_id,
+                    "永久删除待删区资源",
+                    time.time(),
+                    "permanent_pending",
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+            self.db.commit()
+            errors, deleted = [], []
+            for row in rows:
+                path = Path(row["path"])
+                try:
+                    resolved = path.resolve()
+                except OSError as exc:
+                    errors.append(f"{row['name']}: 无法验证待删路径：{exc}")
+                    continue
+                if (
+                    not _inside_lexically(path, trash_directory)
+                    or not _inside(resolved, trash_root)
+                    or resolved == trash_root
+                ):
+                    errors.append(f"{row['name']}: 路径不在待删区，已跳过")
+                    continue
+                try:
+                    if path.is_symlink():
+                        path.unlink()
+                    elif path.is_dir():
+                        shutil.rmtree(path)
+                    elif path.exists():
+                        path.unlink()
+                    deleted.append(row["id"])
+                    self.db.execute("DELETE FROM resources WHERE id=? AND trashed=1", (row["id"],))
+                    payload["deleted_ids"].append(row["id"])
+                    payload["count"] = len(deleted)
+                    self.db.execute(
+                        "UPDATE operations SET payload=? WHERE id=?",
+                        (json.dumps(payload, ensure_ascii=False), operation_id),
+                    )
+                    self.db.commit()
+                except OSError as exc:
+                    errors.append(f"{row['name']}: {exc}")
+            payload["errors"] = errors
+            status = "permanent_partial" if errors else "permanent"
+            self.db.execute(
+                "UPDATE operations SET status=?,payload=?,error=? WHERE id=?",
+                (
+                    status,
+                    json.dumps(payload, ensure_ascii=False),
+                    "\n".join(errors) if errors else None,
+                    operation_id,
+                ),
+            )
+            self.db.commit()
+            return {"count": len(deleted), "errors": errors, "operation_id": operation_id}
+
+    def discard_duplicate_resources(self, selected_resources: list[dict], preview: bool = False) -> dict:
+        """Move selected indexed or explicitly expanded duplicate files to trash."""
+        with self._lock:
+            self._assert_healthy()
+            selected_resources = list(selected_resources or [])
+            if not selected_resources:
+                return {"changes": [], "count": 0}
+
+            indexed_ids = [
+                item["id"] for item in selected_resources if not item.get("temporary")
+            ]
+            indexed = self._selection(indexed_ids) if indexed_ids else []
+            indexed_by_id = {resource["id"]: resource for resource in indexed}
+            if len(indexed_by_id) != len(set(indexed_ids)):
+                raise LibraryError("有资源已不在当前库中，无法移入待删区。")
+
+            trash_root = self.data_dir / "trash"
+            rows = []
+            changes = []
+            for resource in indexed:
+                if resource["trashed"]:
+                    raise LibraryError("所选资源已在待删区。")
+                destination = trash_root / (resource["id"] + "__" + Path(resource["path"]).name[:180])
+                if destination.exists():
+                    raise LibraryError(f"待删区已存在同名资源：{destination.name}")
+                updated = dict(resource)
+                updated.update(path=str(destination), trashed=True)
+                rows.append(updated)
+                changes.append({"action": "move", "from": resource["path"], "to": str(destination), "id": resource["id"]})
+
+            nested_rows = []
+            for item in selected_resources:
+                if not item.get("temporary"):
+                    continue
+                if not item.get("recursive_category"):
+                    raise LibraryError("单文件夹展开结果仅供预览，不能单独移入待删区。")
+                source = Path(item["path"])
+                owner_path = Path(item.get("folder_owner", "")).resolve()
+                owner = next(
+                    (
+                        resource for resource in self.resources()
+                        if resource["type"] == "folder"
+                        and not resource["trashed"]
+                        and _key(resource["path"]) == _key(owner_path)
+                    ),
+                    None,
+                )
+                resolved = source.resolve()
+                try:
+                    relative = resolved.relative_to(owner_path)
+                except ValueError as exc:
+                    raise LibraryError("展开资源已离开所属文件夹，未执行移入待删区。") from exc
+                if (
+                    owner is None
+                    or not relative.parts
+                    or not source.is_file()
+                    or source.is_symlink()
+                    or source.suffix.lower() not in IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+                ):
+                    raise LibraryError("文件夹内部资源已变化或不受支持，未执行移入待删区。")
+                cursor = source
+                while cursor != owner_path:
+                    if _is_linklike(cursor):
+                        raise LibraryError("文件夹内部包含符号链接，未执行移入待删区。")
+                    cursor = cursor.parent
+                stat = source.stat()
+                if (
+                    stat.st_size != int(item.get("size", -1))
+                    or stat.st_mtime_ns != int(item.get("mtime_ns", -1))
+                ):
+                    raise LibraryError("文件夹内部资源在扫描后发生变化，请重新查重。")
+                resource_id = uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"resource-controller-trash:{_key(source)}:{stat.st_size}:{stat.st_mtime_ns}",
+                ).hex
+                destination = trash_root / (resource_id + "__" + source.name[:180])
+                if destination.exists():
+                    raise LibraryError(f"待删区已存在同名资源：{destination.name}")
+                resource_type = "image" if source.suffix.lower() in IMAGE_EXTENSIONS else "video"
+                nested = {
+                    "id": resource_id,
+                    "path": str(destination),
+                    "name": source.stem,
+                    "grade": "",
+                    "tags": [],
+                    "category": owner["category"],
+                    "type": resource_type,
+                    "extension": source.suffix,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "trashed": True,
+                    "cover": None,
+                    "fingerprint": "",
+                    "hash": None,
+                    "hash_signature": None,
+                }
+                nested_rows.append(nested)
+                changes.append({"action": "move", "from": str(source), "to": str(destination), "id": resource_id})
+
+            if preview:
+                return {"changes": changes, "resources": rows + nested_rows, "count": len(rows) + len(nested_rows)}
+
+            def mutate():
+                for resource in rows:
+                    self.db.execute(
+                        "UPDATE resources SET path=?,trashed=? WHERE id=?",
+                        (resource["path"], int(resource["trashed"]), resource["id"]),
+                    )
+                self.db.executemany(
+                    """INSERT INTO resources(
+                        id,path,name,grade,tags,category,type,extension,size,mtime,trashed,
+                        cover,fingerprint,hash,hash_signature
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        (
+                            resource["id"], resource["path"], resource["name"], resource["grade"],
+                            json.dumps(resource["tags"], ensure_ascii=False), resource["category"],
+                            resource["type"], resource["extension"], resource["size"], resource["mtime"],
+                            int(resource["trashed"]), resource["cover"], resource["fingerprint"],
+                            resource["hash"], resource["hash_signature"],
+                        )
+                        for resource in nested_rows
+                    ],
+                )
+
+            result = self._transaction("将重复资源移至待删区", changes, mutate)
+            result["resources"] = rows + nested_rows
+            return result
+
+    def merge_folder_pair(self, first: str | Path, second: str | Path) -> dict:
+        """Copy unique files from one explicitly selected folder into another."""
+        source = Path(second).expanduser().resolve()
+        destination = Path(first).expanduser().resolve()
+        if not source.is_dir() or not destination.is_dir():
+            raise LibraryError("合并目标必须是两个存在的文件夹。")
+        if _inside(destination, source) or _inside(source, destination):
+            raise LibraryError("两个文件夹不能互相嵌套。")
+        known_folders = {
+            _key(resource["path"])
+            for resource in self.resources()
+            if resource["type"] == "folder"
+        }
+        if _key(source) not in known_folders or _key(destination) not in known_folders:
+            raise LibraryError("只能合并已登记的文件夹资源。")
+        mkdir_steps = {}
+        copy_steps = []
+        skipped = 0
+
+        def digest(path):
+            value = hashlib.sha256()
+            with path.open("rb") as handle:
+                while block := handle.read(1024 * 1024):
+                    value.update(block)
+            return value.digest()
+
+        source_files = []
+        source_size_counts = {}
+        for root, dirs, files in os.walk(source, topdown=True, followlinks=False):
+            dirs[:] = [name for name in dirs if not _is_linklike(Path(root) / name)]
+            relative_root = Path(root).relative_to(source)
+            target_root = destination / relative_root
+            missing = []
+            ancestor = target_root
+            while not ancestor.exists() and _inside(ancestor, destination):
+                missing.append(ancestor)
+                ancestor = ancestor.parent
+            for directory in reversed(missing):
+                mkdir_steps[_key(directory)] = {"action": "mkdir", "path": str(directory)}
+            for filename in files:
+                src = Path(root) / filename
+                if src.is_symlink():
+                    continue
+                try:
+                    size = src.stat().st_size
+                    source_files.append((src, target_root / filename, size))
+                    source_size_counts[size] = source_size_counts.get(size, 0) + 1
+                except OSError as exc:
+                    raise LibraryError(f"无法读取待合并文件 {src.name}：{exc}") from exc
+
+        destination_by_size = {}
+        for root, dirs, files in os.walk(destination, topdown=True, followlinks=False):
+            dirs[:] = [name for name in dirs if not _is_linklike(Path(root) / name)]
+            for filename in files:
+                path = Path(root) / filename
+                if path.is_symlink():
+                    continue
+                try:
+                    destination_by_size.setdefault(path.stat().st_size, []).append(path)
+                except OSError:
+                    continue
+
+        known_hashes = {}
+        planned_hashes = {}
+        for source_file, target, size in source_files:
+            needs_digest = size in destination_by_size or source_size_counts[size] > 1
+            source_digest = None
+            if needs_digest:
+                try:
+                    source_digest = digest(source_file)
+                    if size not in known_hashes:
+                        known_hashes[size] = {
+                            digest(existing) for existing in destination_by_size.get(size, [])
+                        }
+                    already_present = source_digest in known_hashes[size] or source_digest in planned_hashes.get(size, set())
+                    if already_present:
+                        skipped += 1
+                        continue
+                except OSError as exc:
+                    raise LibraryError(f"无法比较待合并文件 {source_file.name}：{exc}") from exc
+
+            if target.exists():
+                stem, suffix = target.stem, target.suffix
+                index = 2
+                while target.exists():
+                    target = target.with_name(f"{stem} (合并 {index}){suffix}")
+                    index += 1
+            copy_steps.append({"action": "copy", "from": str(source_file), "to": str(target)})
+            if source_digest is not None:
+                planned_hashes.setdefault(size, set()).add(source_digest)
+        steps = list(mkdir_steps.values()) + copy_steps
+        result = self._transaction("合并文件夹资源", steps, lambda: None) if steps else {
+            "operation_id": None,
+            "title": "合并文件夹资源",
+            "count": 0,
+        }
+        return {"copied": len(copy_steps), "skipped": skipped, **result}
 
     def logs(self, limit: int = 100) -> list[dict]:
         with self._lock:
@@ -1389,26 +1958,21 @@ class Library:
                 data = dict(row)
                 payload = _json_load(data.pop("payload"), {}) or {}
                 data["count"] = payload.get("count", len(payload.get("steps", [])))
-                data["changes"] = payload.get("steps", [])
+                data["changes"] = payload.get("steps", []) or [
+                    {"name": resource.get("name", "资源"), "path": resource.get("path", "")}
+                    for resource in payload.get("resources", [])
+                ]
                 result.append(data)
-            if getattr(self, "global_db", None):
-                seen = {row["id"] for row in result}
-                for row in self.global_db.execute(
-                    "SELECT * FROM global_operations ORDER BY created DESC LIMIT ?",
-                    (min(max(int(limit), 1), 1000),),
-                ):
-                    if row["id"] in seen:
-                        continue
-                    result.append({
-                        "id": row["id"], "title": row["title"], "created": row["created"],
-                        "count": row["count"], "status": "global", "changes": [],
-                    })
-                result.sort(key=lambda item: item["created"], reverse=True)
-                result = result[: min(max(int(limit), 1), 1000)]
             return result
 
     def undo(self, operation_id: str | None = None, preview: bool = False) -> dict:
         with self._lock:
+            if operation_id is None:
+                latest = self.db.execute(
+                    "SELECT status FROM operations ORDER BY created DESC LIMIT 1"
+                ).fetchone()
+                if latest and str(latest["status"]).startswith("permanent"):
+                    raise LibraryError("最近一次操作包含永久删除，无法撤销。")
             row = (
                 self.db.execute(
                     "SELECT * FROM operations WHERE id=? AND status='done'", (operation_id,)
@@ -1654,10 +2218,15 @@ class Library:
         mode: str = "exact",
         category: str | None = None,
         ids: list[str] | None = None,
+        candidate_ids: list[str] | None = None,
         compare_all: bool = False,
         source_ids: list[str] | None = None,
         threshold: int = 8,
         expand_folder: str | Path | None = None,
+        expand_folders: list[str | Path] | None = None,
+        recursive_category: bool = False,
+        folder_pair: list[str | Path] | None = None,
+        expanded_only: bool = False,
         progress=None,
         cancel_event=None,
     ) -> dict:
@@ -1670,44 +2239,22 @@ class Library:
         """
         if mode not in {"exact", "similar"}:
             raise LibraryError("未知去重模式。")
-        source_set = set(source_ids or ids or [])
-        candidate_scope = self.resources() if compare_all else self.resources(category=category)
+        source_set = set(source_ids or [])
+        candidate_scope = (
+            self.resources()
+            if compare_all or candidate_ids is not None
+            else self.resources(category=category)
+        )
+        allowed_ids = (
+            set(candidate_ids) | source_set
+            if candidate_ids is not None
+            else set(ids) if ids is not None and not compare_all else None
+        )
         resources = [
             r for r in candidate_scope
-            if r["type"] != "folder" and (compare_all or ids is None or r["id"] in ids)
+            if r["type"] != "folder" and (allowed_ids is None or r["id"] in allowed_ids)
         ]
         temporary_scope = None
-        if expand_folder is not None:
-            folder = Path(expand_folder).expanduser().resolve()
-            owner = next((r for r in (self.resources() if compare_all else self.resources(category=category))
-                          if r["type"] == "folder" and _key(r["path"]) == _key(folder)), None)
-            if owner is None or not folder.is_dir():
-                raise LibraryError("高级展开只允许选择一个已索引的文件夹资源。")
-            temporary_scope, resources = str(folder), []
-            try:
-                for root, dirs, files in os.walk(folder, topdown=True, followlinks=False):
-                    dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink()]
-                    for filename in files:
-                        path = Path(root) / filename
-                        if path.is_symlink():
-                            continue
-                        suffix = path.suffix.lower()
-                        typ = "image" if suffix in IMAGE_EXTENSIONS else "video" if suffix in VIDEO_EXTENSIONS else None
-                        if not typ:
-                            continue
-                        try:
-                            stat = path.stat()
-                        except OSError:
-                            continue
-                        resources.append({"id": "temporary:" + uuid.uuid4().hex, "path": str(path),
-                                          "name": path.name, "grade": "", "tags": [],
-                                          "category": owner["category"], "type": typ,
-                                          "extension": path.suffix, "size": stat.st_size,
-                                          "mtime": stat.st_mtime, "trashed": False,
-                                          "cover": None, "hash": None, "hash_signature": None,
-                                          "temporary": True})
-            except OSError as exc:
-                raise LibraryError(f"无法展开文件夹资源：{exc}") from exc
         errors, groups = [], []
         cancelled = False
         total = len(resources)
@@ -1716,9 +2263,82 @@ class Library:
         def is_cancelled():
             return bool(cancel_event is not None and cancel_event.is_set())
 
-        def report(done, phase):
+        def report(done, phase, report_total=None):
             if progress:
-                progress({"done": done, "total": total, "phase": phase})
+                progress({
+                    "done": done,
+                    "total": total if report_total is None else report_total,
+                    "phase": phase,
+                })
+
+        folders = list(expand_folders or [])
+        if expand_folder is not None:
+            folders.append(expand_folder)
+        if recursive_category:
+            if mode != "exact":
+                raise LibraryError("分类内递归展开目前只支持完全重复检测。")
+            folders.extend(r["path"] for r in candidate_scope if r["type"] == "folder")
+        if folder_pair:
+            folders.extend(folder_pair)
+        folders = list(dict.fromkeys(str(Path(folder).expanduser().resolve()) for folder in folders))
+        if folder_pair and len(folder_pair) != 2:
+            raise LibraryError("文件夹对比必须选择两个文件夹。")
+        if folders:
+            owners = self.resources() if compare_all or candidate_ids is not None else self.resources(category=category)
+            expanded = []
+
+            def walk_error(exc):
+                errors.append(f"无法读取文件夹 {getattr(exc, 'filename', '')}：{exc}")
+
+            for folder_value in folders:
+                folder = Path(folder_value).expanduser().resolve()
+                owner = next((r for r in owners if r["type"] == "folder" and _key(r["path"]) == _key(folder)), None)
+                if owner is None or not folder.is_dir():
+                    raise LibraryError("高级展开只允许选择已索引的文件夹资源。")
+                try:
+                    for root, dirs, files in os.walk(
+                        folder, topdown=True, followlinks=False, onerror=walk_error
+                    ):
+                        if is_cancelled():
+                            cancelled = True
+                            break
+                        dirs[:] = [name for name in dirs if not _is_linklike(Path(root) / name)]
+                        for filename in files:
+                            if is_cancelled():
+                                cancelled = True
+                                break
+                            path = Path(root) / filename
+                            if path.is_symlink():
+                                continue
+                            suffix = path.suffix.lower()
+                            typ = "image" if suffix in IMAGE_EXTENSIONS else "video" if suffix in VIDEO_EXTENSIONS else None
+                            if not typ:
+                                continue
+                            try:
+                                stat = path.stat()
+                            except OSError:
+                                continue
+                            expanded.append({"id": "temporary:" + uuid.uuid4().hex, "path": str(path),
+                                             "name": path.name, "grade": "", "tags": [],
+                                             "category": owner["category"], "type": typ,
+                                             "extension": path.suffix, "size": stat.st_size,
+                                             "mtime": stat.st_mtime, "mtime_ns": stat.st_mtime_ns,
+                                             "trashed": False,
+                                             "cover": None, "hash": None, "hash_signature": None,
+                                             "temporary": True, "folder_owner": str(folder),
+                                             "recursive_category": bool(recursive_category)})
+                            if len(expanded) % 100 == 0:
+                                report(len(expanded), "正在枚举文件夹内部资源", report_total=0)
+                        if cancelled:
+                            break
+                except OSError as exc:
+                    raise LibraryError(f"无法展开文件夹资源：{exc}") from exc
+            resources = expanded if folder_pair or expanded_only else resources + expanded
+            temporary_scope = str(folders[0]) if len(folders) == 1 else folders
+        total = len(resources)
+
+        if is_cancelled():
+            cancelled = True
 
         def enrich(resources_to_enrich, offset=0):
             """Add lightweight media details without making cancellation wait."""
@@ -1758,6 +2378,15 @@ class Library:
                         digest = (
                             resource["hash"] if signature == resource["hash_signature"] else None
                         )
+                        if not digest and resource.get("temporary"):
+                            cache_row = self.db.execute(
+                                "SELECT size,mtime_ns,hash FROM external_hashes WHERE path=?",
+                                (_key(resource["path"]),),
+                            ).fetchone()
+                            if cache_row and (cache_row["size"], cache_row["mtime_ns"]) == (
+                                st.st_size, st.st_mtime_ns
+                            ):
+                                digest = cache_row["hash"]
                         if not digest:
                             h = hashlib.sha256()
                             with open(resource["path"], "rb") as handle:
@@ -1774,6 +2403,13 @@ class Library:
                                     self.db.execute(
                                         "UPDATE resources SET hash=?,hash_signature=? WHERE id=?",
                                         (digest, signature, resource["id"]),
+                                    )
+                                    self.db.commit()
+                            else:
+                                with self._lock:
+                                    self.db.execute(
+                                        "INSERT OR REPLACE INTO external_hashes(path,size,mtime_ns,hash) VALUES (?,?,?,?)",
+                                        (_key(resource["path"]), st.st_size, st.st_mtime_ns, digest),
                                     )
                                     self.db.commit()
                         hashes.setdefault(digest, []).append(resource)
@@ -1851,11 +2487,34 @@ class Library:
                     grouped.append({"resources": [resource], "hashes": [digest]})
             groups = [{"resources": group["resources"], "similarity": None}
                       for group in grouped if len(group["resources"]) > 1]
+        if folder_pair:
+            compared_folders = {
+                _key(Path(path).expanduser().resolve()) for path in folder_pair
+            }
+            groups = [
+                group for group in groups
+                if compared_folders.issubset(
+                    {
+                        _key(Path(resource["folder_owner"]))
+                        for resource in group["resources"]
+                        if resource.get("folder_owner")
+                    }
+                )
+            ]
+        elif expanded_only and len(folders) > 1:
+            groups = [
+                group for group in groups
+                if len({
+                    _key(Path(resource["folder_owner"]))
+                    for resource in group["resources"]
+                    if resource.get("folder_owner")
+                }) > 1
+            ]
         enrich(
             [resource for group in groups for resource in group["resources"]],
             offset=processed,
         )
-        if compare_all and source_set:
+        if source_set:
             groups = [
                 group for group in groups
                 if any(resource.get("id") in source_set for resource in group["resources"])
@@ -1869,6 +2528,15 @@ class Library:
             "cancelled": cancelled or is_cancelled(),
             "temporary_scope": temporary_scope,
             "temporary": bool(temporary_scope),
+            "temporary_kind": (
+                "folder_pair" if folder_pair else
+                "multiple_folders" if expanded_only and len(folders) > 1 else
+                "recursive_category" if recursive_category else
+                "single_folder" if temporary_scope else None
+            ),
+            "read_only_temporary": bool(folder_pair),
+            "folder_pair": [str(Path(path).expanduser().resolve()) for path in folder_pair] if folder_pair else None,
+            "recursive_category": bool(recursive_category),
         }
 
     def export_data(
