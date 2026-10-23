@@ -181,6 +181,9 @@ class DuplicateResultsDialog(QDialog):
         self.listing.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.listing.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.listing.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.listing.setDragEnabled(False)
+        self.listing.setAcceptDrops(False)
+        self.listing.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self.listing.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.delegate = DuplicateRowDelegate(self.listing, self.thumbnail_store)
         self.delegate.discardRequested.connect(self.discard_resource)
@@ -227,9 +230,7 @@ class DuplicateResultsDialog(QDialog):
         self._discardable_count = 0
         self._build_rows()
         self.listing.itemChanged.connect(self._item_changed)
-        self._pressed_check_state = None
-        self.listing.itemPressed.connect(self._remember_pressed_state)
-        self.listing.itemClicked.connect(self._toggle_clicked_check)
+        self.listing.viewport().installEventFilter(self)
         self.listing.itemSelectionChanged.connect(self._update_preview_action)
         self.listing.itemDoubleClicked.connect(self._preview_item)
         self.thumbnail_store.changed.connect(self._thumbnail_changed)
@@ -392,27 +393,26 @@ class DuplicateResultsDialog(QDialog):
             self._selected_ids.discard(resource_id)
         self._update_selection()
 
-    def _remember_pressed_state(self, item, column):
-        if column == 0 and self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {}):
-            self._pressed_check_state = item.checkState(0)
-        else:
-            self._pressed_check_state = None
-
-    def _toggle_clicked_check(self, item, column):
-        if column != 0 or not self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {}):
-            self._pressed_check_state = None
-            return
-        # If the delegate/native style already toggled the item, leave it
-        # alone. Otherwise this is the fallback path for Windows styles where
-        # the delegate does not receive the mouse release event.
-        if self._pressed_check_state is not None and item.checkState(0) == self._pressed_check_state:
-            item.setCheckState(
-                0,
-                Qt.CheckState.Unchecked
-                if self._pressed_check_state == Qt.CheckState.Checked
-                else Qt.CheckState.Checked,
-            )
-        self._pressed_check_state = None
+    def eventFilter(self, watched, event):
+        if (
+            watched is self.listing.viewport()
+            and event.type() == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            index = self.listing.indexAt(event.position().toPoint())
+            if index.isValid() and index.column() == 0:
+                resource = index.data(Qt.ItemDataRole.UserRole) or {}
+                if self._is_discardable(resource):
+                    item = self.listing.itemFromIndex(index)
+                    self.listing.setCurrentItem(item, 0)
+                    item.setCheckState(
+                        0,
+                        Qt.CheckState.Unchecked
+                        if item.checkState(0) == Qt.CheckState.Checked
+                        else Qt.CheckState.Checked,
+                    )
+                    return True
+        return super().eventFilter(watched, event)
 
     def _update_preview_action(self, *_):
         item = self.listing.currentItem()
