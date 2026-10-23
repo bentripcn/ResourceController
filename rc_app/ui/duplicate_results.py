@@ -134,7 +134,11 @@ class DuplicateRowDelegate(QStyledItemDelegate):
             return True
         if index.column() != 0 or not index.flags() & Qt.ItemFlag.ItemIsUserCheckable:
             return False
-        if click or key:
+        # Mouse clicks are also handled by DuplicateResultsDialog.itemClicked.
+        # Keeping this path as a fallback matters for styles that deliver the
+        # release event directly to the delegate; the dialog avoids toggling
+        # twice when the delegate already changed the state.
+        if key:
             state = index.data(Qt.ItemDataRole.CheckStateRole)
             checked = state == Qt.CheckState.Checked or state == Qt.CheckState.Checked.value
             model.setData(
@@ -223,6 +227,9 @@ class DuplicateResultsDialog(QDialog):
         self._discardable_count = 0
         self._build_rows()
         self.listing.itemChanged.connect(self._item_changed)
+        self._pressed_check_state = None
+        self.listing.itemPressed.connect(self._remember_pressed_state)
+        self.listing.itemClicked.connect(self._toggle_clicked_check)
         self.listing.itemSelectionChanged.connect(self._update_preview_action)
         self.listing.itemDoubleClicked.connect(self._preview_item)
         self.thumbnail_store.changed.connect(self._thumbnail_changed)
@@ -384,6 +391,28 @@ class DuplicateResultsDialog(QDialog):
         else:
             self._selected_ids.discard(resource_id)
         self._update_selection()
+
+    def _remember_pressed_state(self, item, column):
+        if column == 0 and self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {}):
+            self._pressed_check_state = item.checkState(0)
+        else:
+            self._pressed_check_state = None
+
+    def _toggle_clicked_check(self, item, column):
+        if column != 0 or not self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {}):
+            self._pressed_check_state = None
+            return
+        # If the delegate/native style already toggled the item, leave it
+        # alone. Otherwise this is the fallback path for Windows styles where
+        # the delegate does not receive the mouse release event.
+        if self._pressed_check_state is not None and item.checkState(0) == self._pressed_check_state:
+            item.setCheckState(
+                0,
+                Qt.CheckState.Unchecked
+                if self._pressed_check_state == Qt.CheckState.Checked
+                else Qt.CheckState.Checked,
+            )
+        self._pressed_check_state = None
 
     def _update_preview_action(self, *_):
         item = self.listing.currentItem()
