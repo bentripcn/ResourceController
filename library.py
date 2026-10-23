@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from media_tools import register_heif_support, resolve_ffmpeg, video_metadata
+from media_tools import decode_image_bytes, register_heif_support, resolve_ffmpeg, video_metadata
 
 IMAGE_EXTENSIONS = {
     ".jpg",
@@ -2437,7 +2437,13 @@ class Library:
                     break
                 try:
                     if resource["type"] == "image":
-                        with Image.open(resource["path"]) as im:
+                        image_path = Path(resource["path"])
+                        if image_path.suffix.lower() in {".heic", ".heif"}:
+                            decoded = decode_image_bytes(image_path, size=(512, 512))
+                            source = io.BytesIO(decoded)
+                        else:
+                            source = resource["path"]
+                        with Image.open(source) as im:
                             im = ImageOps.exif_transpose(im).convert("L").resize((9, 8))
                             pixels = _pixel_values(im)
                         digest = sum(
@@ -2455,7 +2461,12 @@ class Library:
                         else:
                             errors.append(f"{resource['name']}: 无法解码代表帧，已跳过。")
                 except Exception as exc:
-                    errors.append(f"{resource['name']}: {exc}")
+                    if Path(resource["path"]).suffix.lower() in {".heic", ".heif"}:
+                        errors.append(
+                            f"{resource['name']}: HEIC 解码失败；请检查 pillow-heif 或 FFmpeg 运行组件。"
+                        )
+                    else:
+                        errors.append(f"{resource['name']}: {exc}")
                 if is_cancelled():
                     cancelled = True
                     break
@@ -2519,6 +2530,8 @@ class Library:
                 group for group in groups
                 if any(resource.get("id") in source_set for resource in group["resources"])
             ]
+        if len(errors) > 8:
+            errors = errors[:8] + [f"另有 {len(errors) - 8} 个资源读取失败，已省略详细信息。"]
         return {
             "mode": mode,
             "groups": groups,

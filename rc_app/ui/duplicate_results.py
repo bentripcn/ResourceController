@@ -30,15 +30,20 @@ class DuplicateRowDelegate(QStyledItemDelegate):
         self.thumbnail_store = thumbnail_store
 
     @staticmethod
+    def _resource(index):
+        value = index.siblingAtColumn(0).data(Qt.ItemDataRole.UserRole)
+        return value if isinstance(value, dict) and value.get("path") else None
+
+    @staticmethod
     def check_rect(rect):
         return QRectF(rect.center().x() - 8, rect.center().y() - 8, 16, 16)
 
     def sizeHint(self, option, index):
-        resource = index.siblingAtColumn(0).data(Qt.ItemDataRole.UserRole)
+        resource = self._resource(index)
         return QSize(100, 90 if resource else 38)
 
     def paint(self, painter, option, index):
-        resource = index.siblingAtColumn(0).data(Qt.ItemDataRole.UserRole)
+        resource = self._resource(index)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
@@ -122,6 +127,8 @@ class DuplicateRowDelegate(QStyledItemDelegate):
     def editorEvent(self, event, model, option, index):
         click = event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton
         key = event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Space
+        if not self._resource(index):
+            return False
         if index.column() == 6 and click and index.flags() & Qt.ItemFlag.ItemIsUserCheckable:
             self.discardRequested.emit(index.siblingAtColumn(0).data(Qt.ItemDataRole.UserRole))
             return True
