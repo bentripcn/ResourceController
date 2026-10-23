@@ -304,7 +304,10 @@ class DuplicateResultsDialog(QDialog):
         if self.result.get("read_only_temporary"):
             return False
         if resource.get("temporary"):
-            return bool(self.result.get("recursive_category"))
+            return bool(
+                resource.get("discardable_temporary")
+                or self.result.get("recursive_category")
+            )
         return True
 
     def _preview_item(self, item, column):
@@ -322,6 +325,8 @@ class DuplicateResultsDialog(QDialog):
             messages.append("双文件夹比较 · 结果只读；合并会将第二个文件夹的内容复制到第一个")
         elif temporary_kind == "recursive_category":
             messages.append("分类递归结果 · 文件夹内部的选中重复文件会单独移入待删区，可撤销")
+        elif temporary_kind == "multiple_folders":
+            messages.append("多文件夹互检结果 · 选中的重复文件可移入待删区，可撤销")
         elif temporary_kind == "single_folder":
             messages.append("高级展开结果 · 文件夹内部资源只供预览，不能单独整理")
         if self.result.get("cancelled"):

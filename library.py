@@ -1755,7 +1755,7 @@ class Library:
             for item in selected_resources:
                 if not item.get("temporary"):
                     continue
-                if not item.get("recursive_category"):
+                if not item.get("recursive_category") and not item.get("discardable_temporary"):
                     raise LibraryError("单文件夹展开结果仅供预览，不能单独移入待删区。")
                 source = Path(item["path"])
                 owner_path = Path(item.get("folder_owner", "")).resolve()
@@ -2326,7 +2326,10 @@ class Library:
                                              "trashed": False,
                                              "cover": None, "hash": None, "hash_signature": None,
                                              "temporary": True, "folder_owner": str(folder),
-                                             "recursive_category": bool(recursive_category)})
+                                             "recursive_category": bool(recursive_category),
+                                             "discardable_temporary": bool(
+                                                 not folder_pair and (recursive_category or expanded_only)
+                                             )})
                             if len(expanded) % 100 == 0:
                                 report(len(expanded), "正在枚举文件夹内部资源", report_total=0)
                         if cancelled:
