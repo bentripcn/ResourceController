@@ -170,6 +170,8 @@ class DuplicateResultsDialog(QDialog):
         self.listing.setObjectName("duplicateList")
         self.listing.setHeaderLabels(["", "预览", "资源名称 / 所在位置", "文件大小", "媒体属性", "分级", "操作"])
         self.listing.setRootIsDecorated(False)
+        self.listing.setItemsExpandable(False)
+        self.listing.setExpandsOnDoubleClick(False)
         self.listing.setIndentation(0)
         self.listing.setMouseTracking(True)
         self.listing.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
