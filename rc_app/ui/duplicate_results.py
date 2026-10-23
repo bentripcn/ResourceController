@@ -23,6 +23,12 @@ from .thumbnails import ThumbnailStore
 
 
 class DuplicateRowDelegate(QStyledItemDelegate):
+    discardRequested = Signal(object)
+
+    def __init__(self, parent=None, thumbnail_store=None):
+        super().__init__(parent)
+        self.thumbnail_store = thumbnail_store
+
     @staticmethod
     def check_rect(rect):
         return QRectF(rect.center().x() - 8, rect.center().y() - 8, 16, 16)
@@ -62,6 +68,8 @@ class DuplicateRowDelegate(QStyledItemDelegate):
                 icon("check", "#ffffff", 12).paint(painter, box.adjusted(2, 2, -2, -2).toRect())
         elif index.column() == 1:
             image = index.siblingAtColumn(0).data(Qt.ItemDataRole.UserRole + 1)
+            if image is None and self.thumbnail_store is not None:
+                image = self.thumbnail_store.image(resource.get("path"))
             if image is not None and not image.isNull():
                 pixmap = QPixmap.fromImage(image)
                 target = QRectF(option.rect).adjusted(7, 7, -7, -7)
@@ -98,19 +106,27 @@ class DuplicateRowDelegate(QStyledItemDelegate):
                     str(path.parent), Qt.TextElideMode.ElideMiddle, int(rect.width())
                 ),
             )
+        elif index.column() == 6:
+            if index.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                button_rect = rect.adjusted(0, 19, 0, -19)
+                painter.setPen(QColor("#dce3ed"))
+                painter.setBrush(QColor("#ffffff"))
+                painter.drawRoundedRect(button_rect, 6, 6)
+                painter.setPen(QColor("#536176"))
+                painter.drawText(button_rect, Qt.AlignmentFlag.AlignCenter, "移至待删区")
         else:
             painter.setPen(QColor("#64748b"))
             painter.drawText(rect, Qt.AlignmentFlag.AlignVCenter, str(index.data() or "—"))
         painter.restore()
 
     def editorEvent(self, event, model, option, index):
+        click = event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton
+        key = event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Space
+        if index.column() == 6 and click and index.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+            self.discardRequested.emit(index.siblingAtColumn(0).data(Qt.ItemDataRole.UserRole))
+            return True
         if index.column() != 0 or not index.flags() & Qt.ItemFlag.ItemIsUserCheckable:
             return False
-        click = (
-            event.type() == QEvent.Type.MouseButtonRelease
-            and event.button() == Qt.MouseButton.LeftButton
-        )
-        key = event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Space
         if click or key:
             state = index.data(Qt.ItemDataRole.CheckStateRole)
             checked = state == Qt.CheckState.Checked or state == Qt.CheckState.Checked.value
@@ -153,7 +169,9 @@ class DuplicateResultsDialog(QDialog):
         self.listing.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.listing.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.listing.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.listing.setItemDelegate(DuplicateRowDelegate(self.listing))
+        self.delegate = DuplicateRowDelegate(self.listing, self.thumbnail_store)
+        self.delegate.discardRequested.connect(self.discard_resource)
+        self.listing.setItemDelegate(self.delegate)
         self.listing.setStyleSheet(
             "QTreeWidget { background: white; border: 1px solid #e5e9f0; border-radius: 10px; }"
             " QTreeWidget::item { border: none; border-radius: 0; }"
@@ -192,9 +210,11 @@ class DuplicateResultsDialog(QDialog):
         layout.addLayout(row)
 
         self.resource_items = []
+        self._selected_ids = set()
+        self._discardable_count = 0
         self._build_rows()
-        self.listing.itemChanged.connect(self._update_selection)
-        self.listing.itemSelectionChanged.connect(self._update_selection)
+        self.listing.itemChanged.connect(self._item_changed)
+        self.listing.itemSelectionChanged.connect(self._update_preview_action)
         self.listing.itemDoubleClicked.connect(self._preview_item)
         self.thumbnail_store.changed.connect(self._thumbnail_changed)
         if self.resource_items:
@@ -233,6 +253,9 @@ class DuplicateResultsDialog(QDialog):
     def _build_rows(self):
         self.listing.clear()
         self.resource_items.clear()
+        self._selected_ids.clear()
+        self._discardable_count = 0
+        self.listing.setUpdatesEnabled(False)
         for number, group in enumerate(self.result.get("groups", []), 1):
             heading = QTreeWidgetItem([f"第 {number} 组   ·   {len(group['resources'])} 个资源"])
             heading.setData(0, Qt.ItemDataRole.UserRole, group)
@@ -247,6 +270,7 @@ class DuplicateResultsDialog(QDialog):
                 item.setToolTip(2, resource["path"])
                 if self._is_discardable(resource):
                     item.setCheckState(0, Qt.CheckState.Unchecked)
+                    self._discardable_count += 1
                 else:
                     # Do not call setCheckState for read-only temporary rows:
                     # Qt adds ItemIsUserCheckable automatically when a check
@@ -254,14 +278,9 @@ class DuplicateResultsDialog(QDialog):
                     item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 heading.addChild(item)
                 self.resource_items.append(item)
-                thumbnail = self.thumbnail_store.image(resource.get("path"))
-                if thumbnail is not None:
-                    item.setData(0, Qt.ItemDataRole.UserRole + 1, thumbnail)
-                if self._is_discardable(resource):
-                    remove = button("移至待删区", lambda _=False, row=item: self.discard_item(row), glyph="trash")
-                    remove.setFixedHeight(30)
-                    self.listing.setItemWidget(item, 6, remove)
         self.listing.expandAll()
+        self.listing.setUpdatesEnabled(True)
+        self.listing.viewport().update()
         self._update_heading()
 
     def _is_discardable(self, resource):
@@ -294,25 +313,27 @@ class DuplicateResultsDialog(QDialog):
         self.status.setVisible(bool(messages))
 
     def _thumbnail_changed(self, path):
-        for item in self.resource_items:
-            resource = item.data(0, Qt.ItemDataRole.UserRole) or {}
-            if path and resource.get("path") != path:
-                continue
-            image = self.thumbnail_store.image(resource.get("path"))
-            if image is not None:
-                item.setData(0, Qt.ItemDataRole.UserRole + 1, image)
+        # Painting requests thumbnails lazily, so only repaint visible rows.
         self.listing.viewport().update()
 
     def selected_resources(self):
         return [
             item.data(0, Qt.ItemDataRole.UserRole)
             for item in self.resource_items
-            if item.checkState(0) == Qt.CheckState.Checked
-            and self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {})
+            if (item.data(0, Qt.ItemDataRole.UserRole) or {}).get("id") in self._selected_ids
         ]
 
     def selected_ids(self):
         return [resource["id"] for resource in self.selected_resources()]
+
+    def _sync_selected_ids(self):
+        self._selected_ids = {
+            (item.data(0, Qt.ItemDataRole.UserRole) or {}).get("id")
+            for item in self.resource_items
+            if item.parent()
+            and item.checkState(0) == Qt.CheckState.Checked
+            and (item.data(0, Qt.ItemDataRole.UserRole) or {}).get("id")
+        }
 
     def select_all_but_one(self):
         self.listing.blockSignals(True)
@@ -332,35 +353,42 @@ class DuplicateResultsDialog(QDialog):
                     )
         finally:
             self.listing.blockSignals(False)
+        self._sync_selected_ids()
         self._update_selection()
 
     def _update_selection(self, *_):
-        count = len(self.selected_ids())
+        count = len(self._selected_ids)
         self.selection_label.setText(f"已选择 {count} 项移至待删区" if count else "未勾选淘汰项")
         self.discard_button.setEnabled(bool(count))
+        self._update_preview_action()
+        self.keep_one_button.setEnabled(bool(self.result.get("groups")) and self._discardable_count > 0)
+
+    def _item_changed(self, item, column):
+        if column != 0 or not item.parent():
+            return
+        resource = item.data(0, Qt.ItemDataRole.UserRole) or {}
+        resource_id = resource.get("id")
+        if not resource_id:
+            return
+        if item.checkState(0) == Qt.CheckState.Checked:
+            self._selected_ids.add(resource_id)
+        else:
+            self._selected_ids.discard(resource_id)
+        self._update_selection()
+
+    def _update_preview_action(self, *_):
         item = self.listing.currentItem()
         self.preview_button.setEnabled(bool(item and item.parent()))
-        has_discardable = any(
-            self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {})
-            for item in self.resource_items
-        )
-        self.keep_one_button.setEnabled(bool(self.result.get("groups")) and has_discardable)
 
     def set_actions_enabled(self, enabled):
         self.keep_one_button.setEnabled(
-            enabled and bool(self.result.get("groups")) and any(
-                self._is_discardable(item.data(0, Qt.ItemDataRole.UserRole) or {})
-                for item in self.resource_items
-            )
+            enabled and bool(self.result.get("groups")) and self._discardable_count > 0
         )
         self.discard_button.setEnabled(enabled and bool(self.selected_ids()))
         self.preview_button.setEnabled(
             enabled and self.listing.currentItem() is not None and self.listing.currentItem().parent() is not None
         )
-        for item in self.resource_items:
-            widget = self.listing.itemWidget(item, 6)
-            if widget:
-                widget.setEnabled(enabled)
+        self.listing.setEnabled(enabled)
 
     def discard_selected(self):
         resources = self.selected_resources()
@@ -374,6 +402,10 @@ class DuplicateResultsDialog(QDialog):
 
     def discard_item(self, item):
         resource = item.data(0, Qt.ItemDataRole.UserRole)
+        if resource and self._is_discardable(resource):
+            self.discardRequested.emit([resource])
+
+    def discard_resource(self, resource):
         if resource and self._is_discardable(resource):
             self.discardRequested.emit([resource])
 
