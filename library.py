@@ -58,6 +58,7 @@ VIDEO_EXTENSIONS = {
     ".mpeg",
     ".mts",
     ".m2ts",
+    ".m2t",
     ".3gp",
 }
 RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.I)

@@ -9,9 +9,11 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
+    QInputDialog,
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QStyle,
     QVBoxLayout,
 )
@@ -53,6 +55,10 @@ class FolderBrowserDialog(QDialog):
         self.location = label(str(self.current), "detailTitle")
         self.location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         top.addWidget(self.location, 1)
+        self.stats = label("", "muted")
+        self.stats.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.stats.setMinimumWidth(245)
+        top.addWidget(self.stats)
         layout.addLayout(top)
 
         self.listing = QListWidget()
@@ -94,8 +100,30 @@ class FolderBrowserDialog(QDialog):
         try:
             entries = sorted(self.current.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold()))
         except OSError as exc:
+            self.stats.setText("无法读取内容")
             self.listing.addItem(f"无法读取此文件夹：{exc}")
             return
+
+        image_count = 0
+        video_count = 0
+        folder_count = 0
+        for path in entries:
+            try:
+                if path.is_symlink() or not self._inside_root(path):
+                    continue
+                if path.is_dir():
+                    folder_count += 1
+                elif path.is_file():
+                    suffix = path.suffix.lower()
+                    if suffix in IMAGE_EXTENSIONS:
+                        image_count += 1
+                    elif suffix in VIDEO_EXTENSIONS:
+                        video_count += 1
+            except OSError:
+                continue
+        self.stats.setText(
+            f"图片 {image_count}  ·  视频 {video_count}  ·  子文件夹 {folder_count}"
+        )
 
         for path in entries:
             try:
@@ -159,14 +187,45 @@ class FolderBrowserDialog(QDialog):
 
     def show_item_menu(self, point):
         item = self.listing.itemAt(point)
-        if item is None or not self.cover_callback:
+        if item is None:
             return
         resource = item.data(Qt.ItemDataRole.UserRole) or {}
-        if resource.get("type") != "image":
+        path = Path(resource.get("path", "")).resolve()
+        if not path or not self._inside_root(path) or path == self.root:
             return
         menu = QMenu(self)
-        menu.addAction("设为此文件夹资源封面", lambda: self.cover_callback(resource, None))
+        if resource.get("type") == "image" and self.cover_callback:
+            menu.addAction("设为此文件夹资源封面", lambda: self.cover_callback(resource, None))
+            menu.addSeparator()
+        menu.addAction("重命名", lambda: self.rename_item(resource))
         menu.exec(self.listing.viewport().mapToGlobal(point))
+
+    def rename_item(self, resource):
+        """Rename a direct child while keeping all changes inside this viewer's root."""
+        source = Path(resource.get("path", "")).resolve()
+        if not source.exists() or source == self.root or not self._inside_root(source):
+            return
+        name, accepted = QInputDialog.getText(self, "重命名", "新的名称", text=source.name)
+        if not accepted:
+            return
+        name = name.strip()
+        if not name or name in {".", ".."} or Path(name).name != name:
+            QMessageBox.warning(self, "无法重命名", "名称不能为空，且不能包含路径分隔符。")
+            return
+        destination = source.with_name(name)
+        if destination == source:
+            return
+        if destination.exists():
+            QMessageBox.warning(self, "无法重命名", "目标名称已存在，请换一个名称。")
+            return
+        try:
+            source.rename(destination)
+        except OSError as exc:
+            QMessageBox.warning(self, "无法重命名", f"重命名失败：{exc}")
+            return
+        if source == self.current:
+            self.current = destination
+        self.refresh()
 
     def closeEvent(self, event):
         for player in list(self._player_windows):
