@@ -15,6 +15,7 @@ from rc_app.ui.window import MainWindow
 def main(argv=None):
     parser = argparse.ArgumentParser(description="ResourceController Qt desktop")
     parser.add_argument("--data-dir", help="Use a separate application database/data directory")
+    parser.add_argument("media_paths", nargs="*", metavar="MEDIA")
     args = parser.parse_args(argv)
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("ResourceController")
@@ -27,6 +28,8 @@ def main(argv=None):
     app.setFont(font)
     window = MainWindow(data_dir=args.data_dir)
     window.show()
+    if args.media_paths:
+        window.open_media_paths(args.media_paths)
     return app.exec()
 
 

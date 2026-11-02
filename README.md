@@ -6,7 +6,7 @@
 
 <p align="center">本地图片、视频与文件夹资源整理工具</p>
 
-![Version](https://img.shields.io/badge/version-1.0.3-3478F6)
+![Version](https://img.shields.io/badge/version-1.0.4-3478F6)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
 ![UI](https://img.shields.io/badge/UI-PySide6%20%7C%20Qt-41CD52)
@@ -17,9 +17,9 @@
 
 ## 下载
 
-[下载最新版本](https://github.com/bentripcn/ResourceController/releases/latest) · [查看 v1.0.3 发布说明](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.3) · [直接下载 Windows x64 便携包](https://github.com/bentripcn/ResourceController/releases/download/v1.0.3/ResourceController-1.0.3-windows-x64.zip)
+[下载最新版本](https://github.com/bentripcn/ResourceController/releases/latest) · [查看 v1.0.4 发布说明](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.4) · [直接下载 Windows x64 便携包](https://github.com/bentripcn/ResourceController/releases/download/v1.0.4/ResourceController-1.0.4-windows-x64.zip)
 
-下载 `ResourceController-1.0.3-windows-x64.zip` 后完整解压，双击 `ResourceController.exe` 即可运行。发布包已经包含 Qt、Pillow、pillow-heif 和 FFmpeg，目标电脑无需安装 Python 或其他运行环境。
+下载 `ResourceController-1.0.4-windows-x64.zip` 后完整解压，双击 `ResourceController.exe` 即可运行。发布包已经包含 Qt、Pillow、pillow-heif 和 FFmpeg，目标电脑无需安装 Python 或其他运行环境。
 
 > 支持 Windows 10/11 x64。请勿只复制单独的 EXE，程序需要同目录中的运行组件。
 
@@ -30,6 +30,7 @@
 - 一个资源可添加多个扁平标签，标签以 `[标签]` 写入文件名。
 - 支持 JPG、PNG、WebP、TIFF、HEIC/HEIF 等图片，以及包括 M2T/M2TS 在内的视频和原子文件夹资源；默认不会递归修改文件夹内部内容。
 - 支持缩略图网格、列表视图、详情查看、图片预览和视频播放。
+- 支持将媒体文件拖到程序图标启动并直接用内置播放器打开，播放器提供顺序、随机、单曲循环和 0.1× 至 2.0× 倍速。
 - 打开文件夹资源后可浏览子目录、查看当前目录的图片/视频/子文件夹数量，并通过右键菜单重命名内部项目或设置封面。
 - 支持多选、拖放、批量分级、批量标签、批量移动和批量重命名。
 - 支持按分类、分级、标签、资源类型和关键词组合筛选。
@@ -118,7 +119,7 @@ powershell -ExecutionPolicy Bypass -File .\package_windows.ps1
 
 ```text
 dist/ResourceController/ResourceController.exe
-release/ResourceController-1.0.3-windows-x64.zip
+release/ResourceController-1.0.4-windows-x64.zip
 ```
 
 ## 项目结构
@@ -140,4 +141,4 @@ ResourceController/
 
 ## 版本
 
-当前稳定版本为 `1.0.3`，对应 Git 标签 [`v1.0.3`](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.3)。
+当前稳定版本为 `1.0.4`，对应 Git 标签 [`v1.0.4`](https://github.com/bentripcn/ResourceController/releases/tag/v1.0.4)。

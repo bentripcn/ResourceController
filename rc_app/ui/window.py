@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from library import IMAGE_EXTENSIONS, Library, LibraryError
+from library import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, Library, LibraryError
 from media_tools import make_video_poster
 from rc_app.controller import LibraryController
 from rc_app.models import FilterState
@@ -592,6 +592,61 @@ class MainWindow(QMainWindow):
         ):
             self.schedule_card_layout()
         return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _media_resources_from_paths(paths):
+        supported = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+        resources = []
+        seen = set()
+        for value in paths:
+            path = Path(value).expanduser()
+            extension = path.suffix.lower()
+            if extension not in supported:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if not path.is_file():
+                continue
+            resolved = str(path.resolve())
+            key = resolved.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            resources.append(
+                {
+                    "id": f"external:{key}",
+                    "path": resolved,
+                    "name": path.stem,
+                    "type": "image" if extension in IMAGE_EXTENSIONS else "video",
+                    "extension": extension,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "grade": "",
+                    "tags": [],
+                    "category": None,
+                }
+            )
+        return resources
+
+    def open_media_paths(self, paths):
+        resources = self._media_resources_from_paths(paths)
+        if not resources:
+            self.status_label.setText("启动参数中没有可播放的图片或视频")
+            return
+        self._show_player(resources, 0)
+        self.status_label.setText(f"已从程序图标打开 {len(resources)} 个媒体文件")
+
+    def _show_player(self, resources, start, cover_callback=None):
+        player = MediaPreview(resources, start, cover_callback=cover_callback)
+        self._player_windows.add(player)
+        player.finished.connect(lambda _result, view=player: self._player_windows.discard(view))
+        player.setWindowModality(Qt.WindowModality.NonModal)
+        player.show()
+        player.raise_()
+        player.activateWindow()
+        return player
 
     def schedule_card_layout(self):
         if not self._closed:
@@ -1597,12 +1652,7 @@ class MainWindow(QMainWindow):
                 return
             media = [resource for resource in self.model.rows if resource["type"] != "folder"]
             start = next(i for i, resource in enumerate(media) if resource["id"] == selected["id"])
-            player = MediaPreview(media, start, cover_callback=self.set_video_cover_from_preview)
-            self._player_windows.add(player)
-            player.finished.connect(lambda _result, view=player: self._player_windows.discard(view))
-            player.show()
-            player.raise_()
-            player.activateWindow()
+            self._show_player(media, start, self.set_video_cover_from_preview)
 
     def resource_menu(self, view, point):
         index = view.indexAt(point)

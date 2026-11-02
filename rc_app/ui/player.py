@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QCursor, QDesktopServices, QImage, QImageReader, QKeySequence, QShortcut
+import random
+
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import (
+    QActionGroup,
+    QCursor,
+    QDesktopServices,
+    QImage,
+    QImageReader,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QApplication,
@@ -11,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QLabel,
+    QMenu,
     QSlider,
     QStyle,
     QStackedWidget,
@@ -72,10 +83,12 @@ class MediaPreview(QDialog):
         self.cover_callback = cover_callback
         requested = resources[start] if resources and 0 <= start < len(resources) else None
         self.resources = [resource for resource in resources if resource.get("type") != "folder"]
+        self._sequence_resources = list(self.resources)
         self.position = next(
             (i for i, resource in enumerate(self.resources) if requested and resource.get("id") == requested.get("id")),
             0,
         )
+        self.play_mode = "sequence"
         self.player = None
         self._centered = False
         self.slideshow = False
@@ -152,7 +165,9 @@ class MediaPreview(QDialog):
         self._seek_hold.timeout.connect(self._start_fast_forward)
         self._fast_forward = False
         self._right_held = False
-        self._previous_rate = 1.0
+        self._playback_rate = 1.0
+        self._previous_rate = self._playback_rate
+        self._speed_menu = None
         self._was_playing = False
         self._ended = False
         self._current_media_path = None
@@ -180,6 +195,9 @@ class MediaPreview(QDialog):
         self.slide_button = button("自动播放", self.toggle_slideshow, kind="playerText")
         self.slide_button.setFixedWidth(110)
         left.addWidget(self.slide_button)
+        self.play_mode_button = button("顺序播放", self.cycle_play_mode, kind="playerText")
+        self.play_mode_button.setFixedWidth(106)
+        left.addWidget(self.play_mode_button)
         center = QHBoxLayout(); center.setSpacing(5)
         previous = button("", lambda: self._manual_step(-1), glyph="previous", kind="playerTool")
         self.play_button = button("", self.toggle_play, glyph="play", kind="playerTool")
@@ -194,8 +212,10 @@ class MediaPreview(QDialog):
         cover_layout.addWidget(self.cover_button)
         left.addWidget(self.cover_slot)
         external = button("系统应用打开", self.open_external, kind="playerText")
+        self.speed_button = button("1.0×", self.show_speed_menu, kind="playerText")
+        self.speed_button.setFixedWidth(68)
         fullscreen = button("", self.toggle_fullscreen, glyph="fullscreen", kind="playerTool")
-        right.addWidget(external); right.addWidget(fullscreen)
+        right.addWidget(self.speed_button); right.addWidget(external); right.addWidget(fullscreen)
         left.addStretch()
         right.insertStretch(0)
         right_panel = QWidget()
@@ -208,8 +228,17 @@ class MediaPreview(QDialog):
         for column in (0, 2):
             row.setColumnMinimumWidth(column, 270)
             row.setColumnStretch(column, 1)
-        for control in (self.slide_button, self.cover_button, external, previous,
-                        self.play_button, following, fullscreen):
+        for control in (
+            self.slide_button,
+            self.play_mode_button,
+            self.cover_button,
+            self.speed_button,
+            external,
+            previous,
+            self.play_button,
+            following,
+            fullscreen,
+        ):
             control.setFixedHeight(34)
             control.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             control.setAutoDefault(False)
@@ -279,6 +308,7 @@ class MediaPreview(QDialog):
         self.elapsed.setText("00:00")
         self.total.setText("00:00")
         self.play_button.setEnabled(r["type"] == "video" and self.player is not None)
+        self.speed_button.setEnabled(r["type"] == "video" and self.player is not None)
         self._update_play_button()
         self.cover_button.setVisible(
             r["type"] == "video"
@@ -289,7 +319,7 @@ class MediaPreview(QDialog):
         )
         if r["type"] == "video" and self.player:
             self.stack.setCurrentWidget(self.video)
-            self.player.setPlaybackRate(1.0)
+            self.player.setPlaybackRate(self._playback_rate)
             self._current_media_path = r["path"]
             self._progress_timer.start()
             QTimer.singleShot(0, lambda path=r["path"]: self._load_video(path))
@@ -398,20 +428,88 @@ class MediaPreview(QDialog):
             play()
 
     def step(self, amount=1):
-        """Autoplay advances in list order and loops to the first item."""
+        """Advance according to the active playback mode."""
+        self._manual_step(amount)
+
+    def cycle_play_mode(self):
+        modes = ("sequence", "random", "repeat")
+        current = modes.index(self.play_mode)
+        self.set_play_mode(modes[(current + 1) % len(modes)])
+
+    def set_play_mode(self, mode):
+        if mode not in {"sequence", "random", "repeat"} or not self.resources:
+            return
+        current = self.resources[self.position]
+        current_id = current.get("id", current.get("path"))
+
+        if mode == "sequence":
+            self.resources = list(self._sequence_resources)
+            self.position = next(
+                (i for i, resource in enumerate(self.resources)
+                 if resource.get("id", resource.get("path")) == current_id),
+                0,
+            )
+        elif mode == "random":
+            rest = [
+                resource for resource in self._sequence_resources
+                if resource.get("id", resource.get("path")) != current_id
+            ]
+            random.shuffle(rest)
+            self.resources = [current, *rest]
+            self.position = 0
+
+        self.play_mode = mode
+        self.play_mode_button.setText(
+            {"sequence": "顺序播放", "random": "随机播放", "repeat": "循环播放"}[mode]
+        )
+        resource = self.resources[self.position]
+        self.heading.setText(f"{resource['name']}    ·    {self.position + 1} / {len(self.resources)}")
+
+    def _manual_step(self, amount, allow_repeat_navigation=False):
         if not self.resources:
             return
-        next_position = self.position + amount
-        if next_position >= len(self.resources):
-            next_position = 0
-        self.position = max(0, next_position)
-        self.show_resource()
-
-    def _manual_step(self, amount):
-        if not self.resources:
+        if self.play_mode == "repeat" and not allow_repeat_navigation:
+            self.show_resource()
             return
         self.position = (self.position + amount) % len(self.resources)
         self.show_resource()
+
+    def show_speed_menu(self):
+        if not self._is_video():
+            return
+        menu = QMenu(self)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        for tenth in range(1, 21):
+            rate = tenth / 10
+            action = menu.addAction(f"{rate:.1f}×")
+            action.setCheckable(True)
+            action.setChecked(abs(rate - self._playback_rate) < 0.001)
+            group.addAction(action)
+            action.triggered.connect(
+                lambda checked=False, selected_rate=rate: self.set_playback_speed(selected_rate)
+            )
+        menu.ensurePolished()
+        menu_size = menu.sizeHint()
+        top_right = self.speed_button.mapToGlobal(QPoint(self.speed_button.width(), 0))
+        x = top_right.x() - menu_size.width()
+        y = top_right.y() - menu_size.height() - 5
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen:
+            area = screen.availableGeometry()
+            x = max(area.left(), min(x, area.right() - menu_size.width() + 1))
+            y = max(area.top(), min(y, area.bottom() - menu_size.height() + 1))
+        self._speed_menu = menu
+        menu.aboutToHide.connect(lambda: setattr(self, "_speed_menu", None))
+        menu.popup(QPoint(x, y))
+
+    def set_playback_speed(self, rate):
+        rate = round(max(0.1, min(2.0, float(rate))), 1)
+        self._playback_rate = rate
+        self._previous_rate = rate
+        self.speed_button.setText(f"{rate:.1f}×")
+        if self._is_video() and not self._fast_forward:
+            self.player.setPlaybackRate(rate)
 
     def toggle_slideshow(self):
         if not self.resources:
@@ -565,7 +663,7 @@ class MediaPreview(QDialog):
         self._right_held = False
         self._fast_forward = False
         if fast and self.player:
-            self.player.setPlaybackRate(self._previous_rate)
+            self.player.setPlaybackRate(self._playback_rate)
             if not self._was_playing:
                 self.player.pause()
         elif held and seek_on_tap and self._is_video():
@@ -603,7 +701,10 @@ class MediaPreview(QDialog):
             pressed = event.type() == QEvent.Type.KeyPress
             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
                 if pressed:
-                    self._manual_step(-1 if event.key() == Qt.Key.Key_Up else 1)
+                    self._manual_step(
+                        -1 if event.key() == Qt.Key.Key_Up else 1,
+                        allow_repeat_navigation=True,
+                    )
                 event.accept()
                 return True
             if self._is_video():
@@ -662,7 +763,10 @@ class MediaPreview(QDialog):
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
-            self._manual_step(-1 if event.key() == Qt.Key.Key_Up else 1)
+            self._manual_step(
+                -1 if event.key() == Qt.Key.Key_Up else 1,
+                allow_repeat_navigation=True,
+            )
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
@@ -697,7 +801,11 @@ class MediaPreview(QDialog):
         elif status == self.player.MediaStatus.EndOfMedia:
             self._ended = True
             self._release_right_hold(False)
-            if self.slideshow:
+            if self.play_mode == "repeat":
+                self._ended = False
+                self.player.setPosition(0)
+                self.player.play()
+            elif self.slideshow:
                 self.step(1)
         self._update_play_button()
 
@@ -763,6 +871,8 @@ class MediaPreview(QDialog):
 
     def _update_fullscreen_pointer(self, point):
         if not self.isFullScreen():
+            return
+        if self._speed_menu is not None and self._speed_menu.isVisible():
             return
         if not self.rect().contains(point):
             self._hide_fullscreen_controls()
