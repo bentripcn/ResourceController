@@ -16,7 +16,7 @@ class FilterState:
     tag_match: str = "any"
     types: set[str] = field(default_factory=set)
     query: str = ""
-    sort: str = "name"
+    sort: str = "mtime_desc"
 
 
 @dataclass(slots=True)

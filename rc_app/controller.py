@@ -27,7 +27,14 @@ class LibraryController:
             rows = [row for row in rows if row.get("grade", "") in grade_values]
         if filters.types:
             rows = [row for row in rows if row["type"] in filters.types]
-        if filters.sort == "size":
+        if filters.sort == "mtime_desc":
+            rows.sort(
+                key=lambda row: (
+                    -float(row.get("mtime", 0) or 0),
+                    row.get("name", "").casefold(),
+                )
+            )
+        elif filters.sort == "size":
             rows.sort(key=lambda row: row["size"], reverse=True)
         elif filters.sort == "grade":
             rows.sort(key=lambda row: (row.get("grade") or "Z", row["name"].casefold()))

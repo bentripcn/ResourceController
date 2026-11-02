@@ -316,7 +316,11 @@ class MainWindow(QMainWindow):
         self.tag_filter.selectionChanged.connect(self.refresh_resources)
         row.addStretch()
         self.sort_filter = ModernComboBox()
-        self.sort_filter.addItems(["名称排序", "大小排序", "分级排序"])
+        self.sort_filter.addItem("名称排序", "name")
+        self.sort_filter.addItem("大小排序", "size")
+        self.sort_filter.addItem("分级排序", "grade")
+        self.sort_filter.addItem("修改时间", "mtime_desc")
+        self.sort_filter.setCurrentIndex(3)
         self.sort_filter.setFixedWidth(180)
         self.sort_filter.currentIndexChanged.connect(self.refresh_resources)
         row.addWidget(self.sort_filter)
@@ -737,13 +741,7 @@ class MainWindow(QMainWindow):
         selected = set(self.selected_ids()) if hasattr(self, "grid") else set()
         metric_types = {"images": "image", "videos": "video", "folders": "folder"}
         selected_types = {metric_types[key] for key in self.metric_filters}
-        sort = (
-            "size"
-            if self.sort_filter.currentIndex() == 1
-            else "grade"
-            if self.sort_filter.currentIndex() == 2
-            else "name"
-        )
+        sort = self.sort_filter.currentData() or "mtime_desc"
         rows = self.controller.query(
             FilterState(
                 category=self.category,
